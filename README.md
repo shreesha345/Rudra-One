@@ -165,15 +165,3 @@ RudraOne/
 
 ---
 
-## 🔐 Compliance
-- Indian data sovereignty, encrypted comms, integration-friendly, secure by design
-
-## 🤝 Contributing
-Submit PRs and issues! All contributors welcome.
-
-## 📄 License
-MIT
-
-## 📧 Contact
-Reach out to the RudraOne team for support and partnerships.
-
