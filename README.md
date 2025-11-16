@@ -148,6 +148,7 @@ DEEPGRAM_API_KEY=your_deepgram_api_key_here
 ---
 
 ## 📁 Structure
+```
 RudraOne/
 ├── server.py
 ├── pyproject.toml
@@ -160,6 +161,7 @@ RudraOne/
 │   ├── .env (frontend)
 │   └── vite.config.ts
 └── README.md
+```
 
 ---
 
