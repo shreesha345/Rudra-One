@@ -1,0 +1,45 @@
+[project]
+name = "rudraone-github"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper==1.1.0",
+    "langdetect>=1.0.9",
+    "noisereduce>=3.0.3",
+    "numpy<2",
+    "pyaudio>=0.2.14",
+    "soundfile>=0.13.1",
+    "speechbrain>=1.0.3",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "torchaudio>=2.0.0",
+    "whisper-live>=0.6.3",
+    "groq>=0.32.0",
+    "python-dotenv>=1.1.1",
+    "fastapi>=0.119.0",
+    "google-genai>=1.45.0",
+    "uvicorn>=0.38.0",
+    "pydub>=0.25.1",
+    "quart>=0.20.0",
+    "twilio>=9.8.4",
+    "requests>=2.31.0",
+    "assemblyai>=0.45.1",
+    "elevenlabs>=2.19.0",
+    "python-multipart>=0.0.20",
+    "deepgram-sdk>=5.1.0",
+    "ollama>=0.6.0",
+    "googletrans>=4.0.2",
+    "deep-translator>=1.11.4",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
+torchaudio = { index = "pytorch-cu121" }
