@@ -29,6 +29,7 @@ import traceback
 # Import training functions
 from training import load_scenarios, select_random_scenario
 from google import genai
+from config import config
 
 
 # Load environment variables
@@ -46,21 +47,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Environment variables with validation
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-PORT = int(os.getenv("PORT", "8000"))
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
-NGROK_URL = os.getenv("NGROK_URL")
+DEEPGRAM_API_KEY = config.get("DEEPGRAM_API_KEY")
+TWILIO_ACCOUNT_SID = config.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = config.get("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = config.get("TWILIO_PHONE_NUMBER")
+GOOGLE_API_KEY = config.get("GOOGLE_API_KEY")
+PORT = int(config.get("PORT", "8000"))
+ENVIRONMENT = config.get("ENVIRONMENT", "development")
+ALLOWED_ORIGINS = config.get("ALLOWED_ORIGINS", "*").split(",")
+NGROK_URL = config.get("NGROK_URL")
 
 # Audio configuration - Using 16kHz for wideband quality (clearer voice)
 CHUNK = 320  # Doubled for 16kHz (was 160 for 8kHz)
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-RATE = int(os.getenv("AUDIO_RATE", "16000"))  # 16kHz wideband quality (optimal for 8kHz upsampling)
+RATE = int(config.get("AUDIO_RATE", "16000"))  # 16kHz wideband quality (optimal for 8kHz upsampling)
 
 # Global state - BROWSER-ONLY MODE (no laptop audio)
 phone_audio_recording = []
@@ -78,8 +79,8 @@ WS_URL = None
 caller_languages: Dict[str, str] = {}  # Maps caller_number -> detected language code
 dispatcher_languages: Dict[str, str] = {}  # Maps caller_number -> dispatcher's detected language
 dispatcher_should_translate: Dict[str, bool] = {}  # Maps caller_number -> whether to translate
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-ELEVENLABS_VOICE = os.getenv("ELEVENLABS_VOICE", "uYXf8XasLslADfZ2MB4u")
+ELEVENLABS_API_KEY = config.get("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE = config.get("ELEVENLABS_VOICE", "uYXf8XasLslADfZ2MB4u")
 
 # Training state
 training_sessions: Dict[str, dict] = {}  # Maps session_id -> training session data
@@ -195,7 +196,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 if ENVIRONMENT == "production":
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["*"] if not os.getenv("ALLOWED_HOSTS") else os.getenv("ALLOWED_HOSTS").split(",")
+        allowed_hosts=["*"] if not config.get("ALLOWED_HOSTS") else config.get("ALLOWED_HOSTS").split(",")
     )
 
 
@@ -270,7 +271,7 @@ def fetch_twilio_recordings(date_str: str, call_sid: Optional[str] = None):
         from datetime import datetime, timedelta
         
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        recordings_dir = os.getenv("RECORDINGS_DIR", "recordings")
+        recordings_dir = config.get("RECORDINGS_DIR", "recordings")
         os.makedirs(recordings_dir, exist_ok=True)
         
         # Parse date
@@ -420,7 +421,7 @@ def update_twilio_webhook(domain):
 def save_recordings():
     """Save audio recordings to WAV files"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    recordings_dir = os.getenv("RECORDINGS_DIR", "recordings")
+    recordings_dir = config.get("RECORDINGS_DIR", "recordings")
     
     # Create recordings directory if it doesn't exist
     os.makedirs(recordings_dir, exist_ok=True)
@@ -530,6 +531,11 @@ async def text_to_speech_elevenlabs(text: str, language_code: str = 'en') -> Opt
             'bn': 'pNInz6obpgDQGcFmaJgB',  # Bengali
             'ta': 'pNInz6obpgDQGcFmaJgB',  # Tamil
             'te': 'pNInz6obpgDQGcFmaJgB',  # Telugu
+            'kn': 'pNInz6obpgDQGcFmaJgB',  # Kannada
+            'ml': 'pNInz6obpgDQGcFmaJgB',  # Malayalam
+            'gu': 'pNInz6obpgDQGcFmaJgB',  # Gujarati
+            'pa': 'pNInz6obpgDQGcFmaJgB',  # Punjabi
+            'mr': 'pNInz6obpgDQGcFmaJgB',  # Marathi
             'es': 'EXAVITQu4vr4xnSDxMaL',  # Bella - Spanish
             'fr': 'EXAVITQu4vr4xnSDxMaL',  # French
             'de': 'pNInz6obpgDQGcFmaJgB',  # German
@@ -975,7 +981,7 @@ class DeepgramRealtimeTranscriber:
     def save_transcript(self, filename: str):
         """Save transcript to file"""
         if self.full_transcript:
-            transcripts_dir = os.getenv("TRANSCRIPTS_DIR", "transcripts")
+            transcripts_dir = config.get("TRANSCRIPTS_DIR", "transcripts")
             os.makedirs(transcripts_dir, exist_ok=True)
             filepath = os.path.join(transcripts_dir, filename)
             try:
@@ -987,6 +993,54 @@ class DeepgramRealtimeTranscriber:
 
 
 # Audio threads removed - all audio now routed through browser WebSocket
+
+
+# Settings Endpoints
+@app.post("/settings")
+async def update_settings(request: Request):
+    """Update server configuration"""
+    try:
+        data = await request.json()
+        config.update(data)
+        
+        # Update globals
+        global DEEPGRAM_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
+        global GOOGLE_API_KEY, PORT, ENVIRONMENT, ALLOWED_ORIGINS, NGROK_URL
+        global ELEVENLABS_API_KEY, ELEVENLABS_VOICE, SARVAM_API_KEY
+        
+        DEEPGRAM_API_KEY = config.get("DEEPGRAM_API_KEY")
+        TWILIO_ACCOUNT_SID = config.get("TWILIO_ACCOUNT_SID")
+        TWILIO_AUTH_TOKEN = config.get("TWILIO_AUTH_TOKEN")
+        TWILIO_PHONE_NUMBER = config.get("TWILIO_PHONE_NUMBER")
+        GOOGLE_API_KEY = config.get("GOOGLE_API_KEY")
+        PORT = int(config.get("PORT", "8000"))
+        ENVIRONMENT = config.get("ENVIRONMENT", "development")
+        ALLOWED_ORIGINS = config.get("ALLOWED_ORIGINS", "*").split(",")
+        NGROK_URL = config.get("NGROK_URL")
+        ELEVENLABS_API_KEY = config.get("ELEVENLABS_API_KEY")
+        ELEVENLABS_VOICE = config.get("ELEVENLABS_VOICE", "uYXf8XasLslADfZ2MB4u")
+        SARVAM_API_KEY = config.get("SARVAM_API_KEY")
+        
+        logger.info("✅ Settings updated successfully")
+        
+        return {"status": "success", "message": "Settings updated"}
+    except Exception as e:
+        logger.error(f"Failed to update settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/settings")
+async def get_settings():
+    """Get current server configuration (masked)"""
+    c = config._config.copy()
+    # Mask keys
+    for key in ["DEEPGRAM_API_KEY", "TWILIO_AUTH_TOKEN", "GOOGLE_API_KEY", "ELEVENLABS_API_KEY", "SARVAM_API_KEY", "GROQ_API_KEY", "ASSEMBLYAI_API_KEY"]:
+        if c.get(key):
+            val = str(c[key])
+            if len(val) > 4:
+                c[key] = val[:4] + "*" * (len(val) - 4)
+            else:
+                c[key] = "****"
+    return c
 
 
 # Health check endpoint

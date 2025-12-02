@@ -13,6 +13,7 @@ import { getProtocolManager, ProtocolQuestion } from "@/services/protocolService
 import { useRealtimeTranslation } from "@/hooks/useRealtimeTranslation";
 import ReactMarkdown from 'react-markdown';
 import { MapView } from "@/components/MapView";
+import { DesktopSettings } from "@/components/DesktopSettings";
 
 // Speech Recognition interface
 interface SpeechRecognition extends EventTarget {
@@ -1978,7 +1979,9 @@ export const Dashboard = () => {
         </div >
 
         {/* Center Panel - Conversation OR Full Map View */}
-        {activeNavItem === "calls" && conversation.length === 0 && !selectedCallerNumber ? (
+        {activeNavItem === "admin" ? (
+          <DesktopSettings />
+        ) : activeNavItem === "calls" && conversation.length === 0 && !selectedCallerNumber ? (
           // Full-width map view when no active calls
           <div className="flex-1 flex flex-col bg-[#1a1a1a] min-w-0">
             <div className="flex-1 p-4">
@@ -2462,7 +2465,7 @@ export const Dashboard = () => {
         )}
 
         {/* Right Resize Handle - Hidden when showing full map */}
-        {!(activeNavItem === "calls" && conversation.length === 0 && !selectedCallerNumber) && (
+        {activeNavItem !== "admin" && !(activeNavItem === "calls" && conversation.length === 0 && !selectedCallerNumber) && (
           <div
             className="w-1 bg-white/5 cursor-col-resize flex items-center justify-center group relative resize-handle"
             onMouseDown={() => setIsResizingRight(true)}
@@ -2473,7 +2476,7 @@ export const Dashboard = () => {
         )}
 
         {/* Right Panel - Insights - Hidden when showing full map */}
-        {!(activeNavItem === "calls" && conversation.length === 0 && !selectedCallerNumber) && (
+        {activeNavItem !== "admin" && !(activeNavItem === "calls" && conversation.length === 0 && !selectedCallerNumber) && (
           <div id="right-panel" style={{ width: `${rightWidth}px` }} className="border-l border-[#333333] bg-[#1f1f1f] flex flex-col flex-shrink-0">
           <div className="border-b border-[#333333]">
             <nav className="flex items-center px-2 overflow-x-auto justify-between">
