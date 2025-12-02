@@ -19,7 +19,10 @@ End-to-end AI-driven platform integrating multi-agency operations, advanced lang
 ---
 
 ## 🎥 Demo
-[![RudraOne Demo](https://img.youtube.com/vi/Hbso7qwJCJk/0.jpg)](https://youtu.be/Hbso7qwJCJk)
+<video src="extra/RudraOne.mp4" controls="controls" width="100%">
+</video>
+
+[Watch Demo Video](extra/RudraOne.mp4)
 
 ---
 
