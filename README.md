@@ -19,10 +19,8 @@ End-to-end AI-driven platform integrating multi-agency operations, advanced lang
 ---
 
 ## 🎥 Demo
-<video src="extra/RudraOne.mp4" controls="controls" width="100%">
+<video src="https://private-user-images.githubusercontent.com/71629361/521396271-d2ccf4f1-d1f9-4f3a-800c-dd88d12d1652.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NjQ2ODc0MDEsIm5iZiI6MTc2NDY4NzEwMSwicGF0aCI6Ii83MTYyOTM2MS81MjEzOTYyNzEtZDJjY2Y0ZjEtZDFmOS00ZjNhLTgwMGMtZGQ4OGQxMmQxNjUyLm1wND9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTEyMDIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUxMjAyVDE0NTE0MVomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWRlNzQ5ZTFhNDg4OWZiMGEyYzI0OWY2MmM5YzFlYWJmNGE3MDQxNDliM2IxNzExYjBlOWEyN2JkNzg5ZTZiOGEmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.G0lyvaOSDN17qJU6nyxcW5cszAtTjJEXSo84PDcfHoI" controls="controls" width="100%">
 </video>
-
-[Watch Demo Video](extra/RudraOne.mp4)
 
 ---
 
