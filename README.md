@@ -18,6 +18,11 @@ End-to-end AI-driven platform integrating multi-agency operations, advanced lang
 
 ---
 
+## 🎥 Demo
+[![RudraOne Demo](https://img.youtube.com/vi/Hbso7qwJCJk/0.jpg)](https://youtu.be/Hbso7qwJCJk)
+
+---
+
 ## ✨ Features
 - Unified multi-agency interface (police, fire, ambulance)
 - Text/SMS to 112 support, AML India integration
