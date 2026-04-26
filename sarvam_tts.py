@@ -8,11 +8,12 @@ import base64
 import logging
 from typing import Optional
 import json
+from config import config
 
 logger = logging.getLogger(__name__)
 
 # Sarvam AI Configuration
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
+SARVAM_API_KEY = config.get("SARVAM_API_KEY")
 SARVAM_WS_URL = "wss://api.sarvam.ai/text-to-speech-websocket"
 
 # Language to speaker mapping for Sarvam AI
@@ -61,7 +62,8 @@ async def text_to_speech_sarvam(text: str, language_code: str = 'hi') -> Optiona
     Returns:
         MP3 audio bytes or None if failed
     """
-    if not SARVAM_API_KEY or SARVAM_API_KEY == 'your_sarvam_api_key_here':
+    api_key = config.get("SARVAM_API_KEY")
+    if not api_key or api_key == 'your_sarvam_api_key_here':
         logger.error("❌ Sarvam API key not configured")
         return None
     
@@ -79,7 +81,7 @@ async def text_to_speech_sarvam(text: str, language_code: str = 'hi') -> Optiona
         logger.info(f"🎤 Sarvam TTS: '{text[:50]}...' | Lang: {target_language} | Speaker: {speaker}")
         
         # Initialize Sarvam client
-        client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
+        client = AsyncSarvamAI(api_subscription_key=api_key)
         
         # Connect to streaming TTS
         async with client.text_to_speech_streaming.connect(
@@ -150,8 +152,8 @@ async def text_to_speech_sarvam(text: str, language_code: str = 'hi') -> Optiona
 
 async def text_to_speech_hybrid(text: str, language_code: str = 'en') -> Optional[bytes]:
     """
-    Hybrid TTS: Use Sarvam for all supported languages (Indian languages + English)
-    Falls back to ElevenLabs only for unsupported languages
+    Hybrid TTS: Use ElevenLabs for all languages.
+    Sarvam AI is disabled as per configuration.
     
     Args:
         text: Text to convert to speech
@@ -160,14 +162,8 @@ async def text_to_speech_hybrid(text: str, language_code: str = 'en') -> Optiona
     Returns:
         Audio bytes (MP3 format) or None if failed
     """
-    # Use Sarvam for Indian languages AND English (Sarvam supports English with Indian accent)
-    if is_indian_language(language_code):
-        logger.info(f"🇮🇳 Using Sarvam AI for {language_code}")
-        return await text_to_speech_sarvam(text, language_code)
+    # Import here to avoid circular dependency
+    from server import text_to_speech_elevenlabs
     
-    # Use ElevenLabs only for other languages not supported by Sarvam
-    else:
-        logger.info(f"🌍 Using ElevenLabs for {language_code}")
-        # Import here to avoid circular dependency
-        from server import text_to_speech_elevenlabs
-        return await text_to_speech_elevenlabs(text, language_code)
+    logger.info(f"🌍 Using ElevenLabs for {language_code} (Sarvam disabled)")
+    return await text_to_speech_elevenlabs(text, language_code)
