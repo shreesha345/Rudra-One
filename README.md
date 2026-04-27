@@ -224,21 +224,6 @@ yarn dev
 
 ---
 
-## 🔐 Security & Compliance
-
-### Data Protection
-- End-to-end encryption for sensitive communications
-- Role-based access control (RBAC)
-- Audit logging for all operations
-- GDPR/Indian data protection compliance ready
-
-### Deployment Flexibility
-- **On-Premise**: Full data sovereignty for government agencies
-- **Hybrid Cloud**: Balance between control and scalability
-- **Multi-Region**: Geographic redundancy options
-
----
-
 ## 🛣️ Future Enhancements
 
 ### Potential Roadmap
