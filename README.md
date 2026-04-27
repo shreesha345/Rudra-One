@@ -5,7 +5,8 @@
 RudraOne represents India's first unified, AI-driven emergency response platform, modernizing the 112 emergency system with advanced technology integration. The platform addresses critical gaps in India's emergency infrastructure through intelligent automation and real-time coordination.
 
 **Live Demo:** [rudraone.vercel.app](https://rudraone.vercel.app/)  
-*Note: May experience limitations due to free-tier API constraints*
+**Video Demo:** [Watch on YouTube](https://youtu.be/IkyAFmvcztU)  
+*Note: Live demo may experience limitations due to free-tier API constraints*
 
 ---
 
@@ -67,6 +68,20 @@ RudraOne consolidates all emergency services into a single interface, enabling:
 - **Flexible Deployment**: On-premise or cloud options
 - **Compliance Ready**: Meets Indian data protection requirements
 - **Secure Infrastructure**: End-to-end encryption
+
+---
+
+## 🎥 Platform Demonstration
+
+**Watch the full platform walkthrough:** [RudraOne Demo Video](https://youtu.be/IkyAFmvcztU)
+
+The video demonstrates:
+- Real-time emergency call handling with AI translation
+- Multi-agency dispatch coordination
+- Live video streaming integration
+- AI analytics assistant in action
+- Non-emergency call deflection
+- Operator dashboard features
 
 ---
 
@@ -242,6 +257,10 @@ yarn dev
 - GitHub repository documentation
 - API documentation at `/docs` endpoint
 - Community forums (TBD)
+
+### Demo Resources
+- **Live Platform**: [rudraone.vercel.app](https://rudraone.vercel.app/)
+- **Video Walkthrough**: [YouTube Demo](https://youtu.be/IkyAFmvcztU)
 
 ### Contributing
 - Open for contributions (check repository)
