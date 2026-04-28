@@ -41,7 +41,7 @@ RudraOne consolidates all emergency services into a single interface, enabling:
 ### 1. **Advanced Language Processing**
 - **Real-time Translation**: 10+ Indian languages supported
 - **Speech-to-Text**: Automatic transcription using Deepgram/AssemblyAI
-- **Multi-lingual TTS**: Response generation via ElevenLabs and Sarvam AI
+- **Multi-lingual TTS**: Response generation via ElevenLabs
 - **SMS Integration**: Text-to-112 support for accessibility
 
 ### 2. **Enhanced Situational Awareness**
@@ -90,9 +90,9 @@ The video demonstrates:
 ### Backend Stack
 ```
 Core Framework: FastAPI (Python 3.12+)
-AI Models: OpenAI GPT, Google Gemini, Groq AI
+AI Models:Google Gemini
 Speech Processing: Deepgram, AssemblyAI
-Voice Synthesis: ElevenLabs, Sarvam AI
+Voice Synthesis: ElevenLabs
 Communication: Twilio (Voice/SMS)
 Development Tools: uv (dependency management), ngrok (webhooks)
 ```
@@ -118,8 +118,8 @@ Package Manager: Yarn (Corepack)
          │
     ┌────┴─────┬─────────┬──────────┬─────────┐
     ▼          ▼         ▼          ▼         ▼
-  OpenAI    Gemini    Deepgram  Twilio    Mapbox
-  (GPT)     (AI)      (Speech)  (Comms)   (Maps)
+  Gemini    Gemini    Deepgram  Twilio    Mapbox
+  (AI)     (AI)      (Speech)  (Comms)   (Maps)
 ```
 
 ---
@@ -151,8 +151,8 @@ iwr https://astral.sh/uv/install.ps1 -UseBasicParsing | iex
 uv sync
 
 # Configure environment (create .env file)
-# Add API keys for: OpenAI, Groq, Google, Twilio, 
-# AssemblyAI, Deepgram, ElevenLabs, Sarvam
+# Add API keys for: Google, Twilio, 
+# AssemblyAI, Deepgram, ElevenLabs
 
 # Run server
 uv run python server.py
@@ -185,9 +185,9 @@ yarn dev
 ## 🔑 Required API Services
 
 ### Essential Services
-1. **AI Models**: OpenAI GPT, Google Gemini, Groq AI
+1. **AI Models**: Google Gemini
 2. **Speech Recognition**: Deepgram or AssemblyAI
-3. **Voice Synthesis**: ElevenLabs, Sarvam AI
+3. **Voice Synthesis**: ElevenLabs
 4. **Communications**: Twilio (voice/SMS)
 5. **Mapping**: Mapbox
 
@@ -273,7 +273,7 @@ yarn dev
 
 RudraOne demonstrates how modern AI and communication technologies can transform critical public infrastructure, making emergency response faster, more accessible, and more effective across India's diverse linguistic and geographic landscape.
 
-**Built with:** FastAPI, React, OpenAI GPT, Google Gemini, Groq AI, Deepgram, Twilio, Mapbox, and more.
+**Built with:** FastAPI, React, Google Gemini, Deepgram, Twilio, Mapbox, and more.
 
 ---
 
