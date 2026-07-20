@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h2>Emergency Location Request</h2>
+<p>Click "Allow" when asked for location.</p>
+
+<script>
+function getQueryParam(param) {
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get(param);
+}
+
+function sendLocation(lat, lon, acc) {
+    const callerNumber = getQueryParam('caller');
+    
+    fetch("/location", {
+        method: "POST",
+        headers: { 
+            "Content-Type": "application/json",
+            "ngrok-skip-browser-warning": "true"
+        },
+        body: JSON.stringify({
+            latitude: lat,
+            longitude: lon,
+            accuracy: acc,
+            caller_number: callerNumber
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log('Location sent successfully:', data);
+        document.body.innerHTML = "<h2>Location Sent</h2><p>Thank you. Help is on the way.</p>";
+    })
+    .catch(error => {
+        console.error('Error sending location:', error);
+        document.body.innerHTML = "<h2>Error</h2><p>Failed to send location. Please try again.</p>";
+    });
+}
+
+if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+        (pos) => {
+            sendLocation(
+                pos.coords.latitude,
+                pos.coords.longitude,
+                pos.coords.accuracy
+            );
+        },
+        (err) => {
+            alert("Unable to get location: " + err.message);
+        }
+    );
+} else {
+    alert("Geolocation not supported on this device.");
+}
+</script>
+
+</body>
+</html>

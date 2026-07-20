@@ -1,0 +1,7 @@
+[01:19:10] [DISPATCH]: हाँ, आपका voice सुनाई दे रहा है.
+[01:19:33] [DISPATCH]: आप मुझे थोड़ा detail में बता सकते हो.
+[01:19:42] [DISPATCH]: Can you please elaborate and say me?
+[01:19:50] [DISPATCH]: क्या मुझे आप थोड़ा
+[01:19:53] [DISPATCH]: information दे सकते हो?
+[01:20:03] [DISPATCH]: थोड़ा अच्छे से आप information
+[01:20:06] [DISPATCH]: इलाके अंदर कर पे मुझे दे सकते हो.
