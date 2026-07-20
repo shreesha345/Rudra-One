@@ -312,6 +312,25 @@ class LocationData(BaseModel):
     caller_number: Optional[str] = None
 
 
+class AgencySettings(BaseModel):
+    call_forward_number: Optional[str] = Field(None, description="Phone number to forward calls to")
+    default_translation_language: str = Field("en", description="Default language for translation (ISO 639-1 code)")
+    
+    @validator('default_translation_language')
+    def validate_language_code(cls, v):
+        # List of supported Indian languages + English
+        valid_codes = ['en', 'hi', 'bn', 'te', 'mr', 'ta', 'gu', 'kn', 'ml', 'pa', 'or']
+        if v not in valid_codes:
+            raise ValueError(f"Language code must be one of: {', '.join(valid_codes)}")
+        return v
+
+
+class SettingsResponse(BaseModel):
+    status: str
+    message: str
+    settings: Optional[dict] = None
+
+
 
 
 def fetch_twilio_recordings(date_str: str, call_sid: Optional[str] = None):
@@ -2214,6 +2233,84 @@ async def websocket_endpoint(websocket: WebSocket):
                 del dispatcher_should_translate[caller_number]
         if send_task:
             send_task.cancel()
+
+
+# Settings storage
+SETTINGS_FILE = "agency_settings.json"
+
+def load_settings() -> dict:
+    """Load agency settings from file"""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading settings: {e}")
+    
+    # Return default settings
+    return {
+        "call_forward_number": None,
+        "default_translation_language": "en"
+    }
+
+
+def save_settings(settings: dict) -> bool:
+    """Save agency settings to file"""
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+        logger.info(f"✅ Settings saved to {SETTINGS_FILE}")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving settings: {e}")
+        return False
+
+
+@app.get("/api/settings", response_model=SettingsResponse)
+async def get_settings():
+    """Get agency settings"""
+    try:
+        settings = load_settings()
+        return SettingsResponse(
+            status="success",
+            message="Settings retrieved successfully",
+            settings=settings
+        )
+    except Exception as e:
+        logger.error(f"Error getting settings: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve settings: {str(e)}"
+        )
+
+
+@app.post("/api/settings", response_model=SettingsResponse)
+async def update_settings(settings: AgencySettings):
+    """Update agency settings"""
+    try:
+        settings_dict = settings.dict()
+        if save_settings(settings_dict):
+            return SettingsResponse(
+                status="success",
+                message="Settings updated successfully",
+                settings=settings_dict
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save settings"
+            )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error updating settings: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update settings: {str(e)}"
+        )
 
 
 def main():

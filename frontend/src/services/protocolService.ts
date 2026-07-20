@@ -23,77 +23,73 @@ export interface ProtocolState {
 // Predefined essential questions that every emergency call should cover
 const PREDEFINED_QUESTIONS: Omit<ProtocolQuestion, 'isAsked'>[] = [
   {
-    id: "emergency-type",
-    question: "What's your emergency?",
-    category: "incident",
-    isPredefined: true,
-    priority: 1
-  },
-  {
     id: "location-address",
     question: "What is the exact address of the incident?",
     category: "location",
     isPredefined: true,
-    priority: 2
+    priority: 1
   },
   {
     id: "caller-safety",
     question: "Are you in a safe location right now?",
     category: "safety",
     isPredefined: true,
-    priority: 3
-  },
-  {
-    id: "injuries",
-    question: "Is anyone injured or in need of medical attention?",
-    category: "medical",
-    isPredefined: true,
-    priority: 4
-  },
-  {
-    id: "weapons-violence",
-    question: "Are there any weapons or violence involved?",
-    category: "safety",
-    isPredefined: true,
-    priority: 5
-  },
-  {
-    id: "people-count",
-    question: "How many people are involved?",
-    category: "incident",
-    isPredefined: true,
-    priority: 6
+    priority: 2
   }
 ];
 
-const AI_PROMPT = `You are an emergency dispatch protocol assistant. Based on the conversation context, generate 3-5 additional critical questions that the dispatcher should ask to gather complete information.
+const AI_PROMPT = `You are an expert emergency dispatch protocol assistant for Indian emergency services (112). Analyze the live conversation and generate 5-8 critical questions the dispatcher should ask to gather complete incident information.
 
-RULES:
-1. Questions must be direct, clear, and quick to answer
-2. Focus on actionable information needed for emergency response
-3. Avoid questions already covered in the conversation
-4. Prioritize safety, location details, and immediate threats
-5. Keep questions professional and concise
-6. Each question should gather specific, useful information
+ANALYZE THE SITUATION:
+1. Identify the emergency type (fire, medical, crime, accident, etc.)
+2. What critical information is MISSING from the conversation
+3. What details would first responders need to know
+4. What immediate safety concerns need to be addressed
 
-Return a JSON array of questions in this format:
+GENERATE QUESTIONS THAT:
+✓ Are specific to the incident type described
+✓ Get actionable details for police/ambulance/fire response
+✓ Verify exact location with landmarks (Indian context: sector, colony, nearby monuments)
+✓ Identify immediate dangers and number of people affected
+✓ Obtain physical descriptions (people, vehicles, property)
+✓ Establish timeline (when started, how long, ongoing/resolved)
+✓ Build naturally on what the caller just mentioned
+
+PRIORITY CATEGORIES:
+1-3: Critical safety & location (WHERE exactly, IS ANYONE IN DANGER)
+4-6: Incident details (WHAT happened, WHO is involved, WHEN did it start)
+7-10: Supporting details (vehicle/person descriptions, witness info, access routes)
+
+AVOID:
+- Questions already clearly answered
+- Multiple questions combined into one
+- Vague or general questions
+- Information not relevant to emergency response
+
+INDIAN CONTEXT:
+- Ask for landmarks, sector numbers, colony names
+- Consider language barriers - keep questions simple
+- Ask about floor number for apartments
+- Verify mobile number for callback
+
+CONVERSATION SO FAR:
+{context}
+
+Return ONLY a valid JSON array with 5-8 questions:
 [
   {
-    "question": "What color and make is the vehicle?",
-    "category": "description",
-    "priority": 7
+    "question": "Which sector or colony is this happening in?",
+    "category": "location",
+    "priority": 1
   },
   {
-    "question": "Which direction did they go?",
-    "category": "location",
-    "priority": 8
+    "question": "How many people are injured?",
+    "category": "medical",
+    "priority": 4
   }
 ]
 
-CONVERSATION CONTEXT:
-{context}
-
-Return only valid JSON array, no additional text.`;
+Return ONLY the JSON array, no other text.`;
 
 export class ProtocolManager {
   private genAI: GoogleGenerativeAI;
@@ -172,26 +168,27 @@ export class ProtocolManager {
 
   /**
    * Detect if a question topic was addressed in the conversation
+   * Uses flexible matching to catch similar phrasings
    */
   private detectQuestionInConversation(question: ProtocolQuestion, conversationText: string): boolean {
     const patterns: Record<string, string[]> = {
-      "emergency-type": ["emergency", "what.*happen", "problem", "issue", "incident"],
-      "location-address": ["address", "location", "where", "street", "building", "apartment", "floor"],
-      "caller-safety": ["safe", "danger", "threat", "secure", "hiding"],
-      "injuries": ["injur", "hurt", "medical", "ambulance", "bleeding", "pain", "wound"],
-      "weapons-violence": ["weapon", "gun", "knife", "violence", "armed", "attack"],
-      "people-count": ["how many", "number of people", "\\d+\\s*people", "crowd", "group"]
+      "location-address": ["address", "location", "where", "street", "building", "apartment", "floor", "sector", "colony", "near", "landmark"],
+      "caller-safety": ["safe", "danger", "threat", "secure", "hiding", "okay", "hurt", "risk"]
     };
 
     const questionPatterns = patterns[question.id];
     if (!questionPatterns) {
-      // For AI-generated questions, use keyword matching
+      // For AI-generated questions, use flexible keyword matching
       const keywords = question.question.toLowerCase()
         .replace(/[?.,!]/g, '')
         .split(' ')
-        .filter(w => w.length > 3);
+        .filter(w => w.length > 3 && !['what', 'where', 'when', 'how', 'the', 'are', 'is', 'was', 'were', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'can', 'may', 'might', 'must', 'shall'].includes(w));
       
-      return keywords.some(keyword => conversationText.includes(keyword));
+      // Check if at least 50% of meaningful keywords appear in conversation
+      const matchCount = keywords.filter(keyword => conversationText.includes(keyword)).length;
+      const matchRatio = keywords.length > 0 ? matchCount / keywords.length : 0;
+      
+      return matchRatio >= 0.4; // 40% match threshold for flexibility
     }
 
     // Check if any pattern matches

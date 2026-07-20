@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { Phone, Plus, Search, Bell, User, ChevronDown, Share2, Sparkles, Copy, Volume2, MapPin, FileText, Play, GripVertical, Radio, BarChart3, GraduationCap, Compass, Settings, Send, Mic, MicOff, CheckCircle, XCircle, AlertCircle, Info, MessageSquare, Ambulance, Shield, Flame, Loader2 } from "lucide-react";
+import { Phone, Plus, Search, Bell, User, ChevronDown, Share2, Sparkles, Copy, Volume2, MapPin, FileText, Play, GripVertical, Radio, BarChart3, GraduationCap, Compass, Settings, Send, Mic, MicOff, CheckCircle, XCircle, AlertCircle, Info, MessageSquare, Ambulance, Shield, Flame, Loader2, LayoutDashboard, Archive, MoreHorizontal, Clock, Filter, RefreshCw, Save, Languages, Trash2, Menu, X, ChevronLeft, ChevronRight, History, Globe, ArrowRight, Tag, LineChart, Award } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -16,6 +16,9 @@ import { MapView } from "@/components/MapView";
 import { DispatchMap, DispatchMapRef, EmergencyStation } from "@/components/DispatchMap";
 import { twilioService } from "@/services/twilioService";
 
+// API Base URL
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 // Speech Recognition interface
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
@@ -28,6 +31,7 @@ interface SpeechRecognition extends EventTarget {
   onend: ((this: SpeechRecognition, ev: Event) => any) | null;
   onresult: ((this: SpeechRecognition, ev: SpeechRecognitionEvent) => any) | null;
   onerror: ((this: SpeechRecognition, ev: SpeechRecognitionErrorEvent) => any) | null;
+  stopping?: boolean;
 }
 
 interface SpeechRecognitionEvent extends Event {
@@ -71,6 +75,7 @@ interface TrainingLog {
   scenario: string;
   date: string;
   time: string;
+  duration?: string;  // Duration in format "MM:SS"
   status: "active" | "completed" | "error";
   confidence_score?: number;
   evaluation?: string;
@@ -79,6 +84,29 @@ interface TrainingLog {
   conversation?: ConversationMessage[];  // Store the conversation history
   insights?: InsightsData;  // Store extracted insights
 }
+
+// Helper function to format duration in MM:SS format
+const formatDuration = (milliseconds: number): string => {
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
+// Timer component for live training sessions
+const TrainingTimer: React.FC<{ startTime: number }> = ({ startTime }) => {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsed(Date.now() - startTime);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [startTime]);
+
+  return <>{formatDuration(elapsed)}</>;
+};
 
 // Simple geocoding function (in production, use Mapbox Geocoding API or Google Geocoding API)
 const geocodeLocation = async (locationText: string): Promise<{ lat: number; lng: number } | null> => {
@@ -160,6 +188,14 @@ export const Dashboard = () => {
   const [isMessageFieldVisible, setIsMessageFieldVisible] = useState(false);
   const [messageText, setMessageText] = useState("");
   
+  // Settings state
+  const [callForwardNumber, setCallForwardNumber] = useState<string>("");
+  const [defaultLanguage, setDefaultLanguage] = useState<string>("en");
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [isSettingsSidebarOpen, setIsSettingsSidebarOpen] = useState(true);
+  const [activeSettingsSection, setActiveSettingsSection] = useState<'call-forwarding' | 'language' | 'storage'>('call-forwarding');
+  
   // Map location state
   const [mapLocation, setMapLocation] = useState({
     latitude: 40.7128,
@@ -178,6 +214,10 @@ export const Dashboard = () => {
   const messageInputRef = useRef<HTMLInputElement>(null);
   const [selectedIncident, setSelectedIncident] = useState(0);
   const [isLiveCall, setIsLiveCall] = useState(false);
+  
+  // Tabs section resize state
+  const [tabsHeight, setTabsHeight] = useState(400); // default height in pixels
+  const [isResizingTabs, setIsResizingTabs] = useState(false);
 
   // WebSocket and call management state
   const [calls, setCalls] = useState<Call[]>([
@@ -250,6 +290,7 @@ export const Dashboard = () => {
   // Protocol questions state
   const [protocolQuestions, setProtocolQuestions] = useState<ProtocolQuestion[]>([]);
   const [hasGeneratedAIQuestions, setHasGeneratedAIQuestions] = useState(false);
+  const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
   const protocolManagerRef = useRef<ReturnType<typeof getProtocolManager> | null>(null);
 
   // Real-time translation hook
@@ -292,6 +333,7 @@ export const Dashboard = () => {
     return [];
   });
   const [isTrainingInProgress, setIsTrainingInProgress] = useState(false);
+  const [trainingStartTime, setTrainingStartTime] = useState<number | null>(null);
   const [trainingConfidence, setTrainingConfidence] = useState<number | null>(() => {
     const saved = localStorage.getItem('trainingConfidence');
     return saved ? JSON.parse(saved) : null;
@@ -434,11 +476,11 @@ export const Dashboard = () => {
 
   // Auto-check protocol questions based on conversation content
   useEffect(() => {
-    if (!protocolManagerRef.current || !selectedCallerNumber) return;
+    if (!protocolManagerRef.current || !selectedCallerNumber || conversation.length === 0) return;
 
     const conversationText = conversation.map(msg => msg.message).join(' ');
 
-    // Check and mark questions
+    // Check and mark questions after every message
     const result = protocolManagerRef.current.checkAndMarkQuestion(
       selectedCallerNumber,
       conversationText
@@ -449,28 +491,33 @@ export const Dashboard = () => {
       const state = protocolManagerRef.current.getSession(selectedCallerNumber);
       if (state) {
         setProtocolQuestions([...state.questions]);
+        
+        // Scroll to show new suggestions
+        setTimeout(() => {
+          conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
       }
     }
 
-    // Generate AI questions after predefined questions are mostly answered
-    if (!hasGeneratedAIQuestions && conversation.length >= 6) {
-      const completion = protocolManagerRef.current.getCompletionPercentage(selectedCallerNumber);
-      if (completion >= 50) {
-        setHasGeneratedAIQuestions(true);
-        protocolManagerRef.current.generateAdditionalQuestions(
-          selectedCallerNumber,
-          conversationText
-        ).then(newQuestions => {
-          if (newQuestions.length > 0) {
-            const state = protocolManagerRef.current!.getSession(selectedCallerNumber);
-            if (state) {
-              setProtocolQuestions([...state.questions]);
-            }
+    // Generate AI questions early based on conversation context (after 2-3 messages)
+    if (!hasGeneratedAIQuestions && conversation.length >= 3) {
+      setHasGeneratedAIQuestions(true);
+      setIsGeneratingQuestions(true);
+      protocolManagerRef.current.generateAdditionalQuestions(
+        selectedCallerNumber,
+        conversationText
+      ).then(newQuestions => {
+        if (newQuestions.length > 0) {
+          const state = protocolManagerRef.current!.getSession(selectedCallerNumber);
+          if (state) {
+            setProtocolQuestions([...state.questions]);
           }
-        }).catch(error => {
-          console.error("Failed to generate AI questions:", error);
-        });
-      }
+        }
+      }).catch(error => {
+        console.error("Failed to generate AI questions:", error);
+      }).finally(() => {
+        setIsGeneratingQuestions(false);
+      });
     }
   }, [conversation, selectedCallerNumber, hasGeneratedAIQuestions]);
 
@@ -510,10 +557,11 @@ export const Dashboard = () => {
     url: apiService.getWebSocketUrl('/client/notifications'),
     autoReconnect: false, // Disable auto-reconnect to prevent spam
     onMessage: (message: TranscriptionMessage) => {
-      if (message.type === 'location_update' && message.location) {
+      const msg = message as any;
+      if (msg.type === 'location_update' && msg.location) {
         // Handle location data received from backend
-        const { latitude, longitude, caller_number } = message.location;
-        console.log('📍 Location received via WebSocket:', message.location);
+        const { latitude, longitude, caller_number } = msg.location;
+        console.log('📍 Location received via WebSocket:', msg.location);
         console.log('📍 Caller number from location:', caller_number);
         console.log('📍 Active messages:', activeMessages);
         
@@ -563,12 +611,30 @@ export const Dashboard = () => {
           const newCall: Call = {
             phone: message.caller_number || 'Unknown',
             preview: 'Incoming call...',
-            time: '00:00',
+            time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
             date: new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: '2-digit' }),
             language: 'English',
             isLive: true,
             call_sid: message.call_sid,
           };
+
+          // Clear conversation and insights for new call
+          console.log('🆕 New call started - clearing conversation and insights');
+          setConversation([]);
+          setInsights({
+            summary: "",
+            location: [],
+            persons_described: [],
+            additional_info: [],
+            incident: {},
+            time_info: {},
+            new_information_found: false
+          });
+          
+          // Reset insights extractor for new call
+          if (insightsExtractorRef.current) {
+            insightsExtractorRef.current = getInsightsExtractor();
+          }
 
           // Add to active messages
           setActiveMessages(prevMessages => {
@@ -662,25 +728,43 @@ export const Dashboard = () => {
             if (targetLang === 'english' || targetLang === 'en') {
               // Dispatcher speaks English - translate caller to English
               const result = await translateCallerMessage(message.message);
+              
+              // Check if source and target are the same (both English)
+              const sourceLangCode = result.sourceLanguage.toLowerCase();
+              const isSameLanguage = sourceLangCode === 'en' || sourceLangCode === 'english';
+              
               translatedMessage = result.translated;
-              isTranslated = result.sourceLanguage !== 'en' && translatedMessage.toLowerCase().trim() !== message.message.toLowerCase().trim();
+              isTranslated = !isSameLanguage && translatedMessage.toLowerCase().trim() !== message.message.toLowerCase().trim();
 
               console.log('✅ CALLER Translation to English:', {
                 original: message.message,
                 translated: translatedMessage,
                 detectedLanguage: result.sourceLanguage,
+                isSameLanguage,
                 isTranslated
               });
             } else {
               // Dispatcher speaks another language - translate caller to that language
               const result = await translateDispatcherMessage(message.message, targetLang);
+              
+              // Normalize language codes for comparison
+              const sourceLangCode = result.sourceLanguage.toLowerCase();
+              const targetLangCode = targetLang.toLowerCase();
+              
+              // Check if both languages are the same
+              const isSameLanguage = sourceLangCode === targetLangCode || 
+                                     sourceLangCode.startsWith(targetLangCode) || 
+                                     targetLangCode.startsWith(sourceLangCode);
+              
               translatedMessage = result.translated;
-              isTranslated = translatedMessage.toLowerCase().trim() !== message.message.toLowerCase().trim();
+              isTranslated = !isSameLanguage && translatedMessage.toLowerCase().trim() !== message.message.toLowerCase().trim();
 
               console.log('✅ CALLER Translation to dispatcher language:', {
                 original: message.message,
                 translated: translatedMessage,
+                sourceLanguage: result.sourceLanguage,
                 targetLanguage: targetLang,
+                isSameLanguage,
                 isTranslated
               });
             }
@@ -824,6 +908,105 @@ export const Dashboard = () => {
     navigate("/");
   };
 
+  const handleClearStorage = () => {
+    if (window.confirm('Are you sure you want to clear all stored data? This will remove all calls, training logs, and settings. This action cannot be undone.')) {
+      localStorage.clear();
+      toast({
+        title: "Storage Cleared",
+        description: "All stored data has been removed. The page will reload.",
+      });
+      // Reload page to reset all state
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    }
+  };
+
+  // Load settings from backend
+  const loadSettings = async () => {
+    setLoadingSettings(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/settings');
+      const data = await response.json();
+      
+      if (data.status === 'success' && data.settings) {
+        setCallForwardNumber(data.settings.call_forward_number || '');
+        setDefaultLanguage(data.settings.default_translation_language || 'en');
+      }
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+    } finally {
+      setLoadingSettings(false);
+    }
+  };
+
+  // Save call forwarding settings
+  const saveCallForwarding = async () => {
+    setSavingSettings(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          call_forward_number: callForwardNumber || null,
+          default_translation_language: defaultLanguage,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        toast({
+          title: 'Success',
+          description: 'Call forwarding settings saved',
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to save call forwarding settings',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  // Save language settings
+  const saveLanguagePreference = async () => {
+    setSavingSettings(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          call_forward_number: callForwardNumber || null,
+          default_translation_language: defaultLanguage,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        toast({
+          title: 'Success',
+          description: 'Language preference saved',
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to save language preference',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  // Load settings on mount
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
   const handleNavClick = (item: string) => {
     console.log(`🔄 Navigating from ${activeNavItem} to ${item}`);
     setActiveNavItem(item);
@@ -864,6 +1047,88 @@ export const Dashboard = () => {
     alert("Analysis started...");
   };
 
+  const handleEmergencySMS = async (station: EmergencyStation) => {
+    try {
+      // Extract phone number from station name or use a default
+      // In production, you'd have phone numbers in the station data
+      const phoneNumber = station.id; // Placeholder - you'd get actual phone from station data
+      
+      const response = await fetch(`${API_BASE_URL}/sms/emergency`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to_number: phoneNumber,
+          insights_data: insights,
+          location_address: mapLocation.address || `${mapLocation.latitude}, ${mapLocation.longitude}`,
+          emergency_type: dispatchEmergencyType,
+          station_name: station.name
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send emergency SMS');
+      }
+
+      const data = await response.json();
+      
+      toast({
+        title: "SMS Sent",
+        description: `Emergency alert sent to ${station.name}`,
+      });
+      
+      console.log('✅ Emergency SMS sent:', data);
+    } catch (error) {
+      console.error('❌ Error sending emergency SMS:', error);
+      toast({
+        title: "SMS Failed",
+        description: "Failed to send emergency alert",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleEmergencyCall = async (station: EmergencyStation) => {
+    try {
+      // Extract phone number from station - in production this would come from station data
+      const phoneNumber = station.id; // Placeholder
+      
+      const response = await fetch(`${API_BASE_URL}/call/emergency`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to_number: phoneNumber,
+          insights_data: insights,
+          location_address: mapLocation.address || `${mapLocation.latitude}, ${mapLocation.longitude}`,
+          emergency_type: dispatchEmergencyType
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to initiate emergency call');
+      }
+
+      const data = await response.json();
+      
+      toast({
+        title: "Call Initiated",
+        description: `Emergency call placed to ${station.name}`,
+      });
+      
+      console.log('✅ Emergency call initiated:', data);
+    } catch (error) {
+      console.error('❌ Error initiating emergency call:', error);
+      toast({
+        title: "Call Failed",
+        description: "Failed to initiate emergency call",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleSendMessage = () => {
     if (activeNavItem === "training" && activeTrainingSession) {
       // Handle training message
@@ -901,10 +1166,15 @@ export const Dashboard = () => {
   // Training functions
   const handleStartTraining = async () => {
     try {
+      // Clear previous evaluation state
+      setTrainingEvaluation(null);
+      setTrainingConfidence(null);
       setIsTrainingInProgress(true);
+      setTrainingStartTime(Date.now());
+      
       const sessionId = `training_${Date.now()}`;
 
-      const response = await fetch('http://localhost:8000/training/start', {
+      const response = await fetch(`${API_BASE_URL}/training/start`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -913,7 +1183,8 @@ export const Dashboard = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to start training session');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to start training session');
       }
 
       const data = await response.json();
@@ -931,6 +1202,12 @@ export const Dashboard = () => {
       setTrainingLogs(prev => [newTrainingLog, ...prev]);
       setActiveTrainingSession(sessionId);
       setSelectedIncident(0);
+
+      // Initialize protocol manager for training
+      if (protocolManagerRef.current) {
+        protocolManagerRef.current.initializeSession(sessionId);
+        console.log('✅ Protocol questions initialized for training session');
+      }
 
       // Initialize training conversation and insights
       if (data.caller_response) {
@@ -991,13 +1268,12 @@ export const Dashboard = () => {
 
     } catch (error) {
       console.error('Error starting training:', error);
+      setIsTrainingInProgress(false);
       toast({
         title: "Training Error",
-        description: "Failed to start training session",
+        description: error instanceof Error ? error.message : "Failed to start training session",
         variant: "destructive",
       });
-    } finally {
-      setIsTrainingInProgress(false);
     }
   };
 
@@ -1020,7 +1296,7 @@ export const Dashboard = () => {
 
       setTrainingConversation(prev => [...prev, dispatchMessage]);
 
-      const response = await fetch('http://localhost:8000/training/message', {
+      const response = await fetch(`${API_BASE_URL}/training/message`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1052,6 +1328,29 @@ export const Dashboard = () => {
         };
         
         setTrainingConversation(prev => [...prev, callerMessage]);
+
+        // Update protocol questions based on conversation
+        if (protocolManagerRef.current && activeTrainingSession) {
+          const conversationText = trainingConversation.map(m => m.message).join(' ') + ' ' + data.caller_response;
+          const result = protocolManagerRef.current.checkAndMarkQuestion(activeTrainingSession, conversationText);
+          
+          if (result.updated) {
+            console.log('✅ Protocol questions updated:', result.markedQuestions);
+          }
+
+          // Generate AI questions dynamically based on conversation
+          if (!isGeneratingQuestions) {
+            setIsGeneratingQuestions(true);
+            protocolManagerRef.current.generateAdditionalQuestions(activeTrainingSession, conversationText)
+              .then(() => {
+                setIsGeneratingQuestions(false);
+                console.log('✅ AI-generated protocol questions updated');
+              })
+              .catch(() => {
+                setIsGeneratingQuestions(false);
+              });
+          }
+        }
 
         // Extract insights from caller message
         if (trainingInsightsExtractorRef.current) {
@@ -1097,24 +1396,22 @@ export const Dashboard = () => {
       console.error('Error sending training message:', error);
       toast({
         title: "Training Error",
-        description: "Failed to send message",
+        description: error instanceof Error ? error.message : "Failed to send message",
         variant: "destructive",
       });
     }
   };
 
-  const handleEndTraining = async () => {
+  const handleStopTraining = async () => {
     if (!activeTrainingSession) return;
 
     try {
-      const response = await fetch('http://localhost:8000/training/end', {
+      const response = await fetch(`${API_BASE_URL}/training/end`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          session_id: activeTrainingSession
-        }),
+        body: JSON.stringify({ session_id: activeTrainingSession }),
       });
 
       if (!response.ok) {
@@ -1123,47 +1420,55 @@ export const Dashboard = () => {
 
       const data = await response.json();
 
-      // Update training log
-      setTrainingLogs(prev => prev.map(log =>
-        log.session_id === activeTrainingSession
-          ? {
-            ...log,
-            status: "completed",
-            confidence_score: data.confidence_score,
-            evaluation: data.evaluation,
-            ended_at: new Date().toISOString(),
-            conversation: [...trainingConversation] // Store the conversation
-          }
-          : log
-      ));
+      // Calculate duration
+      const duration = trainingStartTime 
+        ? formatDuration(Date.now() - trainingStartTime)
+        : "00:00";
 
-      setTrainingConfidence(data.confidence_score);
+      // Stop microphone if active
+      if (isMicActive) {
+        stopSpeechRecognition();
+        setIsMicActive(false);
+      }
+
+      // Update state with evaluation results
       setTrainingEvaluation(data.evaluation);
+      setTrainingConfidence(data.confidence_score);
+      setIsTrainingInProgress(false);
+      setTrainingStartTime(null);
       
-      // Store insights in the training log
-      setTrainingLogs(prev => prev.map(log =>
-        log.session_id === activeTrainingSession
-          ? { ...log, insights: trainingInsights }
+      // Update the log status to completed
+      setTrainingLogs(prev => prev.map(log => 
+        log.session_id === activeTrainingSession 
+          ? { 
+              ...log, 
+              status: 'completed', 
+              evaluation: data.evaluation, 
+              confidence_score: data.confidence_score,
+              ended_at: new Date().toISOString(),
+              duration: duration
+            } 
           : log
       ));
-      
-      setActiveTrainingSession(null);
 
-      // Automatically switch to Results tab to show evaluation
-      setActiveTab("results");
-
+      // Show feedback
       toast({
-        title: "Training Completed",
-        description: `Session ended with ${data.confidence_score}% confidence. View results in the Results tab.`,
+        title: "Training Ended",
+        description: "Session completed. Check Insights for evaluation.",
       });
+      
+      // Switch to Insights tab to show results
+      setActiveTab('insights');
 
     } catch (error) {
       console.error('Error ending training:', error);
+      setIsTrainingInProgress(false);
       toast({
-        title: "Training Error",
-        description: "Failed to end training session",
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to end training session properly",
         variant: "destructive",
       });
+      setIsTrainingInProgress(false);
     }
   };
 
@@ -1241,11 +1546,10 @@ export const Dashboard = () => {
     };
 
     recognition.onend = () => {
-      setIsListening(false);
       console.log('🎤 Speech recognition ended');
 
-      // Auto-restart if still in training speech mode
-      if (isTrainingSpeechActive) {
+      // Auto-restart if still in training speech mode and not intentionally stopped
+      if (isTrainingSpeechActive && !recognition.stopping) {
         console.log('🔄 Restarting speech recognition...');
         setTimeout(() => {
           try {
@@ -1258,10 +1562,17 @@ export const Dashboard = () => {
             setIsTrainingSpeechActive(false);
           }
         }, 500); // Wait 500ms before restarting
+      } else {
+        setIsListening(false);
       }
     };
 
     recognition.onerror = (event) => {
+      // Ignore aborted errors - these are intentional stops
+      if (event.error === 'aborted') {
+        return;
+      }
+
       console.error('🚫 Speech recognition error:', event.error);
 
       if (event.error === 'not-allowed') {
@@ -1275,17 +1586,10 @@ export const Dashboard = () => {
       } else if (event.error === 'no-speech') {
         // Don't show error for no-speech, just log it
         console.log('⏳ No speech detected, will restart automatically...');
-        // Let onend handle the restart
-      } else if (event.error === 'aborted') {
-        // Recognition was intentionally stopped
-        console.log('🛑 Speech recognition aborted');
-        setIsListening(false);
       } else if (event.error === 'network') {
         console.log('🌐 Network error, will retry...');
-        // Let onend handle the restart
       } else {
         console.error('❌ Speech recognition error:', event.error);
-        // For severe errors, stop the recognition
         setIsTrainingSpeechActive(false);
         setIsListening(false);
         toast({
@@ -1343,27 +1647,33 @@ export const Dashboard = () => {
   }, [initializeSpeechRecognition]);
 
   const stopSpeechRecognition = useCallback(() => {
-    console.log('🛑 Stopping speech recognition...');
     setIsTrainingSpeechActive(false); // Set this first to prevent restart
     setIsListening(false);
 
     if (speechRecognition) {
       try {
-        speechRecognition.abort(); // Use abort instead of stop for immediate termination
+        speechRecognition.stopping = true; // Mark as intentional stop
+        speechRecognition.stop(); // Use stop for clean shutdown
       } catch (error) {
-        console.error('Error stopping speech recognition:', error);
+        // Silently handle - recognition may already be stopped
       }
       setSpeechRecognition(null);
     }
-
-    toast({
-      title: "Speech Recognition Stopped",
-      description: "Microphone is no longer listening",
-    });
   }, [speechRecognition]);
 
   // Handle microphone toggle
   const toggleMicrophone = useCallback(async () => {
+    if (activeNavItem === 'training') {
+      if (isMicActive) {
+        stopSpeechRecognition();
+        setIsMicActive(false);
+      } else {
+        await startSpeechRecognition();
+        setIsMicActive(true);
+      }
+      return;
+    }
+
     if (!isMicActive) {
       try {
         if (!audioServiceRef.current) {
@@ -1399,7 +1709,10 @@ export const Dashboard = () => {
               console.error('❌ Failed to stream audio:', error);
             }
           } else {
-            console.warn('⚠️ No caller number selected, audio not sent');
+            // Only warn if we are NOT in training mode (already handled above)
+            if (activeNavItem !== 'training') {
+               console.warn('⚠️ No caller number selected, audio not sent');
+            }
           }
 
           // Calculate audio level for visualization
@@ -1426,7 +1739,7 @@ export const Dashboard = () => {
       setIsMicActive(false);
       setAudioLevel(0);
     }
-  }, [isMicActive, selectedCallerNumber, toast]);
+  }, [isMicActive, selectedCallerNumber, toast, activeNavItem, startSpeechRecognition, stopSpeechRecognition]);
 
   // Simulate audio level for visualization
   useEffect(() => {
@@ -1471,11 +1784,29 @@ export const Dashboard = () => {
     const containerRect = containerRef.current.getBoundingClientRect();
     const newWidth = containerRect.right - e.clientX;
     // Minimum 376px to prevent horizontal scrolling in insights panel (matches default)
-    // Maximum 550px to keep reasonable space for center panel
-    if (newWidth >= 376 && newWidth <= 550) {
+    // Maximum 1200px to allow significant extension
+    if (newWidth >= 376 && newWidth <= 1200) {
       setRightWidth(newWidth);
     }
   }, [isResizingRight]);
+
+  const handleMouseMoveTabs = useCallback((e: MouseEvent) => {
+    if (!isResizingTabs) return;
+    const rightPanel = document.getElementById('right-panel');
+    if (!rightPanel) return;
+    const panelRect = rightPanel.getBoundingClientRect();
+    const locationSection = document.getElementById('location-section');
+    if (!locationSection) return;
+    const locationRect = locationSection.getBoundingClientRect();
+    
+    // Calculate new height for tabs section
+    const newHeight = e.clientY - locationRect.bottom;
+    
+    // Minimum 200px, maximum 800px
+    if (newHeight >= 200 && newHeight <= 800) {
+      setTabsHeight(newHeight);
+    }
+  }, [isResizingTabs]);
 
   const handleMouseMoveSplit = useCallback((e: MouseEvent) => {
     if (!isResizingSplit) return;
@@ -1493,6 +1824,7 @@ export const Dashboard = () => {
     setIsResizingLeft(false);
     setIsResizingRight(false);
     setIsResizingSplit(false);
+    setIsResizingTabs(false);
   }, []);
 
   useEffect(() => {
@@ -1524,6 +1856,21 @@ export const Dashboard = () => {
       };
     }
   }, [isResizingRight, handleMouseMoveRight, handleMouseUp]);
+
+  useEffect(() => {
+    if (isResizingTabs) {
+      document.addEventListener('mousemove', handleMouseMoveTabs);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+      return () => {
+        document.removeEventListener('mousemove', handleMouseMoveTabs);
+        document.removeEventListener('mouseup', handleMouseUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+    }
+  }, [isResizingTabs, handleMouseMoveTabs, handleMouseUp]);
 
   useEffect(() => {
     if (isResizingSplit) {
@@ -1974,7 +2321,7 @@ export const Dashboard = () => {
                 setTrainingEvaluation(null);
               }}
               variant="outline"
-              className="flex-1 bg-transparent border-[#333333] hover:bg-white/5 text-white"
+              className="flex-1 bg-transparent border-[#333333] hover:bg-[#2a2a2a] text-white"
             >
               Review Session
             </Button>
@@ -1995,2296 +2342,1633 @@ export const Dashboard = () => {
     );
   };
 
-  return (
-    <div className="h-screen bg-[#1a1a1a] text-white flex flex-col overflow-hidden">
-      {/* Training Evaluation Popup - Disabled, use Results tab instead */}
-      {/* <TrainingEvaluationPopup /> */}
 
+  return (
+    <div className="flex flex-col h-screen bg-[#0a0a0a] text-white font-sans overflow-hidden">
       <style dangerouslySetInnerHTML={{
         __html: `
-          .custom-scrollbar::-webkit-scrollbar {
-            width: 6px;
-          }
-          .custom-scrollbar::-webkit-scrollbar-track {
-            background: #2a2a2a;
-          }
-          .custom-scrollbar::-webkit-scrollbar-thumb {
-            background: #404040;
-            border-radius: 3px;
-          }
-          .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-            background: #505050;
-          }
-          .resize-handle {
-            transition: background-color 0.2s ease;
-          }
-          .resize-handle:hover {
-            background-color: rgba(59, 130, 246, 0.5) !important;
-          }
-          .resize-handle:active {
-            background-color: rgba(59, 130, 246, 0.8) !important;
-          }
-          .hover-orange:hover {
-            color: #fb923c !important;
-            transition: color 0.2s ease;
-          }
-          .hover-orange-border:hover {
-            border-color: #fb923c !important;
-            color: #fb923c !important;
-            transition: all 0.2s ease;
-          }
-          .search-glow:focus {
-            outline: none;
-            border-color: #fb923c !important;
-            box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.2) !important;
-            transition: all 0.2s ease;
-          }
-          .search-glow:focus-within {
-            border-color: #fb923c !important;
-            box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.2) !important;
-          }
-          [data-state="checked"] {
-            color: #fb923c !important;
-          }
-          [aria-selected="true"] {
-            color: #fb923c !important;
-            background-color: rgba(251, 146, 60, 0.1) !important;
-          }
+          .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+          .custom-scrollbar::-webkit-scrollbar-track { background: #2a2a2a; }
+          .custom-scrollbar::-webkit-scrollbar-thumb { background: #404040; border-radius: 3px; }
+          .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #505050; }
         `
       }} />
+      
       {/* Top Navigation */}
-      <header className="border-b border-[#333333] bg-[#1f1f1f] flex-shrink-0" style={{ height: '64px' }}>
-        <div className="flex items-center justify-between px-4 h-full relative">
-          <div className="w-14 h-14 flex items-center justify-center flex-shrink-0">
-            <img
-              src="/apple-touch-icon-removebg-preview.png"
-              alt="Logo"
-              className="w-14 h-14 object-contain"
-            />
-          </div>
-          <nav className="flex items-center gap-2 overflow-x-auto absolute left-1/2 -translate-x-1/2">
-            <button
-              onClick={() => handleNavClick("calls")}
-              className={`flex items-center gap-1.5 px-3 py-4 whitespace-nowrap text-sm hover-orange border-b-2 transition-colors ${activeNavItem === "calls" ? "text-white font-medium border-[#fb923c]" : "text-[#b5b5b5] border-transparent"
-                }`}
-            >
-              <Phone className="w-4 h-4" />
-              <span>Calls</span>
-            </button>
-            <button
-              onClick={() => handleNavClick("dispatch")}
-              className={`flex items-center gap-1.5 px-3 py-4 whitespace-nowrap text-sm hover-orange border-b-2 transition-colors ${activeNavItem === "dispatch" ? "text-white font-medium border-[#fb923c]" : "text-[#b5b5b5] border-transparent"
-                }`}
-            >
-              <Radio className="w-4 h-4" />
-              <span>Dispatch</span>
-            </button>
-            <button
-              onClick={() => handleNavClick("analytics")}
-              className={`flex items-center gap-1.5 px-3 py-4 whitespace-nowrap text-sm hover-orange border-b-2 transition-colors ${activeNavItem === "analytics" ? "text-white font-medium border-[#fb923c]" : "text-[#b5b5b5] border-transparent"
-                }`}
-            >
-              <BarChart3 className="w-4 h-4" />
-              <span>Analytics</span>
-            </button>
-            <button
-              onClick={() => handleNavClick("training")}
-              className={`flex items-center gap-1.5 px-3 py-4 whitespace-nowrap text-sm hover-orange border-b-2 transition-colors ${activeNavItem === "training" ? "text-white font-medium border-[#fb923c]" : "text-[#b5b5b5] border-transparent"
-                }`}
-            >
-              <GraduationCap className="w-4 h-4" />
-              <span>Training</span>
-            </button>
-            <button
-              onClick={() => handleNavClick("admin")}
-              className={`flex items-center gap-1.5 px-3 py-4 whitespace-nowrap text-sm hover-orange border-b-2 transition-colors ${activeNavItem === "admin" ? "text-white font-medium border-[#fb923c]" : "text-[#b5b5b5] border-transparent"
-                }`}
-            >
-              <Settings className="w-4 h-4" />
-              <span>Admin</span>
-            </button>
-          </nav>
-          <div className="flex items-center gap-2">
-            <button className="p-2 rounded-lg hover:bg-[#2a2a2a] hover-orange">
-              <Bell className="w-5 h-5" />
-            </button>
-            <button onClick={handleLogout} className="w-7 h-7 rounded-full bg-[#2a2a2a] flex items-center justify-center hover:bg-[#333333] hover-orange">
-              <User className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+      <header className="h-14 border-b border-[#2a2a2a] flex items-center justify-between px-4 bg-[#0a0a0a] shrink-0">
+         <div className="flex items-center gap-6">
+            <div className="h-[50px] w-[50px] flex items-center justify-center">
+               <img src="/apple-touch-icon-removebg-preview.png" alt="Logo" className="h-full w-full object-contain" />
+            </div>
+            <div className={`flex items-center gap-2 cursor-pointer h-14 border-b-2 ${activeNavItem === 'dashboard' ? 'text-white border-white' : 'text-gray-400 border-transparent'}`} onClick={() => handleNavClick('dashboard')}>
+               <LayoutDashboard className="w-4 h-4" />
+               <span className="text-sm font-medium">Dashboard</span>
+            </div>
+            <div className={`flex items-center gap-2 cursor-pointer h-14 border-b-2 ${activeNavItem === 'dispatch' ? 'text-white border-white' : 'text-gray-400 border-transparent'}`} onClick={() => handleNavClick('dispatch')}>
+               <Compass className="w-4 h-4" />
+               <span className="text-sm font-medium">Dispatch</span>
+            </div>
+            <div className={`flex items-center gap-2 cursor-pointer h-14 border-b-2 ${activeNavItem === 'training' ? 'text-white border-white' : 'text-gray-400 border-transparent'}`} onClick={() => handleNavClick('training')}>
+               <GraduationCap className="w-4 h-4" />
+               <span className="text-sm font-medium">Training</span>
+            </div>
+            <div className={`flex items-center gap-2 cursor-pointer h-14 border-b-2 ${activeNavItem === 'analytics' ? 'text-white border-white' : 'text-gray-400 border-transparent'}`} onClick={() => handleNavClick('analytics')}>
+               <BarChart3 className="w-4 h-4" />
+               <span className="text-sm font-medium">Analytics</span>
+            </div>
+            <div className={`flex items-center gap-2 cursor-pointer h-14 border-b-2 ${activeNavItem === 'settings' ? 'text-white border-white' : 'text-gray-400 border-transparent'}`} onClick={() => handleNavClick('settings')}>
+               <Settings className="w-4 h-4" />
+               <span className="text-sm font-medium">Settings</span>
+            </div>
+         </div>
+
+         <div className="flex items-center gap-4">
+            {/* Connection Status Indicator */}
+            <div className="flex items-center gap-2 text-xs">
+               <div className={`w-2 h-2 rounded-full ${
+                  notificationsConnected ? 'bg-green-500' : 'bg-red-500'
+               }`}></div>
+               <span className={notificationsConnected ? 'text-green-400' : 'text-red-400'}>
+                  {notificationsConnected ? 'Connected' : 'Disconnected'}
+               </span>
+            </div>
+            <Button variant="ghost" className="text-sm text-gray-400 font-normal hover:text-white hover:bg-[#1a1a1a]">
+              Bangalore 112 Service <ChevronDown className="ml-2 w-4 h-4" />
+            </Button>
+            <Button variant="ghost" size="icon" className="text-gray-400 hover:text-white hover:bg-[#1a1a1a]">
+               <Bell className="w-5 h-5" />
+            </Button>
+            <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center cursor-pointer">
+               <User className="w-4 h-4" />
+            </div>
+         </div>
       </header>
 
-      {/* Main Content */}
-      < div ref={containerRef} className="flex flex-1 overflow-hidden" >
-        {/* Left Sidebar - Incidents or Training Logs - Hide for admin and analytics */}
-        {!(activeNavItem === "admin" || activeNavItem === "analytics") && (
-        < div style={{ width: `${leftWidth}px` }} className="border-r border-[#333333] bg-[#1f1f1f] flex flex-col flex-shrink-0" >
-          <div className="p-4 border-b border-[#333333]">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold">
-                {activeNavItem === "training" ? "Training Logs" : "Incidents"}
-              </h2>
-              {activeNavItem === "training" ? (
-                <button
-                  onClick={handleStartTraining}
-                  className="px-3 py-1.5 text-xs bg-[#fb923c] hover:bg-[#ea7b1a] text-white rounded-lg transition-colors"
-                  disabled={isTrainingInProgress}
-                >
-                  {isTrainingInProgress ? "Training..." : "Start Training"}
-                </button>
-              ) : (
-                <button className="p-1.5 rounded-lg hover:bg-[#2a2a2a] hover-orange">
-                  <Plus className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#b5b5b5] pointer-events-none" />
-              <Input
-                placeholder={activeNavItem === "training" ? "Search Training Sessions" : "Search Incidents"}
-                className="pl-9 h-9 text-sm bg-[#2a2a2a] border-[#333333] text-white placeholder:text-[#b5b5b5] rounded-lg search-glow"
-              />
-            </div>
-          </div>
-          <div className="p-4">
-            <button className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-[#262626] hover:bg-[#2d2d2d] text-sm hover-orange">
-              <span>{activeNavItem === "training" ? "All Training Sessions" : "All Calls"}</span>
-              <ChevronDown className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto custom-scrollbar px-2">
-            {activeNavItem === "training" ? (
-              // Training logs display
-              trainingLogs.length === 0 ? (
-                <div className="flex flex-col items-center justify-center text-center py-8">
-                  <GraduationCap className="w-12 h-12 text-[#6b6b6b] mb-3" />
-                  <p className="text-sm text-[#9e9e9e] mb-2">No training sessions yet</p>
-                  <p className="text-xs text-[#6b6b6b]">Click "Start Training" to begin</p>
-                </div>
-              ) : (
-                trainingLogs.map((log, idx) => (
-                  <div
-                    key={idx}
-                    onClick={() => handleTrainingLogClick(idx)}
-                    className={`flex items-start gap-3 p-3 mb-2 cursor-pointer rounded-lg hover-orange ${idx === selectedIncident ? "bg-[#262626] border-2 border-[#fb923c]" : "bg-[#262626] hover:bg-[#2d2d2d]"
-                      }`}
-                    style={{ minHeight: '60px' }}
-                  >
-                    <div className="w-8 h-8 rounded-full bg-[#2a2a2a] flex items-center justify-center flex-shrink-0 relative">
-                      <GraduationCap className="w-4 h-4" />
-                      {log.status === "active" && (
-                        <div className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-500 rounded-full animate-pulse border-2 border-[#1f1f1f]"></div>
-                      )}
-                      {log.status === "completed" && log.confidence_score && (
-                        <div className="absolute -top-1 -right-1 w-5 h-3 bg-green-500 rounded-full flex items-center justify-center border-2 border-[#1f1f1f]">
-                          <span className="text-[8px] font-bold text-white">{log.confidence_score}%</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-medium text-sm">Training #{idx + 1}</span>
-                        <span className="text-xs text-[#9e9e9e]">{log.date}</span>
-                      </div>
-                      <p className="text-xs text-[#9e9e9e] truncate">{log.scenario || "Emergency scenario training"}</p>
-                      <div className="flex items-center justify-between mt-1">
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${log.status === "active" ? "bg-yellow-500/20 text-yellow-400" :
-                            log.status === "completed" ? "bg-green-500/20 text-green-400" :
-                              "bg-gray-500/20 text-gray-400"
-                          }`}>
-                          {log.status === "active" ? "In Progress" :
-                            log.status === "completed" ? "Completed" : "Unknown"}
-                        </span>
-                        <span className="text-xs text-[#9e9e9e]">{log.time}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )
-            ) : (
-              // Regular calls display
-              calls.map((call, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => handleIncidentClick(idx)}
-                  className={`flex items-start gap-3 p-3 mb-2 cursor-pointer rounded-lg hover-orange ${idx === selectedIncident ? "bg-[#262626] border-2 border-[#fb923c]" : "bg-[#262626] hover:bg-[#2d2d2d]"
-                    }`}
-                  style={{ minHeight: '60px' }}
-                >
-                  <div className="w-8 h-8 rounded-full bg-[#2a2a2a] flex items-center justify-center flex-shrink-0 relative">
-                    <Phone className="w-4 h-4" />
-                    {call.isLive && (
-                      <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full animate-pulse border-2 border-[#1f1f1f]"></div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="font-medium text-sm">{call.phone}</span>
-                      <span className="text-xs text-[#9e9e9e]">{call.date}</span>
-                    </div>
-                    <p className="text-xs text-[#9e9e9e] truncate">{call.preview}</p>
-                    <div className="flex items-center justify-between mt-1">
-                      <span className="text-xs text-[#9e9e9e]">{call.time}</span>
-                      {call.isLive && (
-                        <span className="text-xs text-green-500 font-medium">LIVE</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-            {calls.length === 0 && activeNavItem !== "training" && (
-              <div className="p-8 text-center text-[#9e9e9e]">
-                <Phone className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                <p>No calls yet</p>
-                <p className="text-xs mt-1">
-                  {notificationsConnected ? 'Waiting for incoming calls...' : 'Connecting...'}
-                </p>
-              </div>
-            )}
-          </div>
-        </div >
-        )}
-
-        {/* Left Resize Handle - Hide for admin and analytics */}
-        {!(activeNavItem === "admin" || activeNavItem === "analytics") && (
-        < div
-          className="w-1 bg-white/5 cursor-col-resize flex items-center justify-center group relative resize-handle"
-          onMouseDown={() => setIsResizingLeft(true)}
-        >
-          <div className="absolute inset-y-0 -left-1 -right-1" />
-          <GripVertical className="w-3 h-3 text-gray-500 group-hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
-        </div >
-        )}
-
-        {/* Center Panel - Conversation OR Full Map View OR Dispatch Map OR Analytics OR Admin */}
-        {activeNavItem === "analytics" ? (
-          // Analytics Dashboard - Full Page
-          <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#0f0f0f] p-8">
-            <div className="max-w-[1600px] mx-auto">
-              {/* Header with Date Range */}
-              <div className="mb-8 flex items-center justify-between">
-                <div>
-                  <h1 className="text-4xl font-bold text-white mb-2 flex items-center gap-3">
-                    <BarChart3 className="w-10 h-10 text-[#fb923c]" />
-                    Analytics Dashboard
-                  </h1>
-                  <p className="text-gray-400 text-lg">Real-time call statistics and performance metrics • Updated live</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="bg-[#1f1f1f] border border-[#333333] rounded-lg px-4 py-2">
-                    <span className="text-xs text-gray-400">Period: </span>
-                    <span className="text-sm font-semibold text-white">Last 30 Days</span>
-                  </div>
-                  <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                  <span className="text-xs text-gray-400">Live</span>
-                </div>
-              </div>
-
-              {/* Key Performance Metrics Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
-                <div className="bg-gradient-to-br from-[#2a2a2a] via-[#1f1f1f] to-[#1a1a1a] rounded-2xl p-6 border border-[#333333] hover:border-[#fb923c] transition-all duration-300 shadow-lg">
-                  <div className="flex items-center justify-between mb-5">
-                    <Phone className="w-9 h-9 text-[#fb923c]" />
-                    <span className="text-xs font-bold text-green-400 bg-green-400/10 px-2.5 py-1.5 rounded-full border border-green-400/20">+12%</span>
-                  </div>
-                  <h3 className="text-4xl font-extrabold text-white mb-2">2,847</h3>
-                  <p className="text-sm text-gray-400 mb-3">Total Calls This Month</p>
-                  <div className="pt-3 border-t border-[#333333]">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500">Prev Month</span>
-                      <span className="text-gray-300">2,541</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-gradient-to-br from-[#2a2a2a] via-[#1f1f1f] to-[#1a1a1a] rounded-2xl p-6 border border-[#333333] hover:border-blue-400 transition-all duration-300 shadow-lg">
-                  <div className="flex items-center justify-between mb-5">
-                    <Radio className="w-9 h-9 text-blue-400" />
-                    <div className="flex items-center gap-1.5">
-                      <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                      <span className="text-xs font-bold text-green-400">Live</span>
-                    </div>
-                  </div>
-                  <h3 className="text-4xl font-extrabold text-white mb-2">47</h3>
-                  <p className="text-sm text-gray-400 mb-3">Active Calls Now</p>
-                  <div className="pt-3 border-t border-[#333333]">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500">Peak Today</span>
-                      <span className="text-gray-300">89 calls</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-gradient-to-br from-[#2a2a2a] via-[#1f1f1f] to-[#1a1a1a] rounded-2xl p-6 border border-[#333333] hover:border-red-400 transition-all duration-300 shadow-lg">
-                  <div className="flex items-center justify-between mb-5">
-                    <AlertCircle className="w-9 h-9 text-red-400" />
-                    <span className="text-xs font-bold text-yellow-400 bg-yellow-400/10 px-2.5 py-1.5 rounded-full border border-yellow-400/20">-8%</span>
-                  </div>
-                  <h3 className="text-4xl font-extrabold text-white mb-2">342</h3>
-                  <p className="text-sm text-gray-400 mb-3">High Priority Calls</p>
-                  <div className="pt-3 border-t border-[#333333]">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500">Critical</span>
-                      <span className="text-red-400 font-semibold">89</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-gradient-to-br from-[#2a2a2a] via-[#1f1f1f] to-[#1a1a1a] rounded-2xl p-6 border border-[#333333] hover:border-purple-400 transition-all duration-300 shadow-lg">
-                  <div className="flex items-center justify-between mb-5">
-                    <User className="w-9 h-9 text-purple-400" />
-                    <span className="text-xs font-bold text-green-400 bg-green-400/10 px-2.5 py-1.5 rounded-full border border-green-400/20">+5%</span>
-                  </div>
-                  <h3 className="text-4xl font-extrabold text-white mb-2">28</h3>
-                  <p className="text-sm text-gray-400 mb-3">Active Dispatchers</p>
-                  <div className="pt-3 border-t border-[#333333]">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500">Total Staff</span>
-                      <span className="text-gray-300">142</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Additional Metrics Row */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
-                <div className="bg-[#1f1f1f] rounded-xl p-5 border border-[#333333]">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-gray-500 mb-1">Avg Call Duration</p>
-                      <h4 className="text-2xl font-bold text-white">8m 34s</h4>
-                    </div>
-                    <div className="w-12 h-12 rounded-full bg-[#fb923c]/10 flex items-center justify-center">
-                      <Phone className="w-6 h-6 text-[#fb923c]" />
-                    </div>
-                  </div>
-                </div>
-                <div className="bg-[#1f1f1f] rounded-xl p-5 border border-[#333333]">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-gray-500 mb-1">Resolution Rate</p>
-                      <h4 className="text-2xl font-bold text-green-400">94.7%</h4>
-                    </div>
-                    <div className="w-12 h-12 rounded-full bg-green-400/10 flex items-center justify-center">
-                      <CheckCircle className="w-6 h-6 text-green-400" />
-                    </div>
-                  </div>
-                </div>
-                <div className="bg-[#1f1f1f] rounded-xl p-5 border border-[#333333]">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-gray-500 mb-1">Callback Rate</p>
-                      <h4 className="text-2xl font-bold text-blue-400">12.3%</h4>
-                    </div>
-                    <div className="w-12 h-12 rounded-full bg-blue-400/10 flex items-center justify-center">
-                      <Phone className="w-6 h-6 text-blue-400" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Call Traffic & Language Distribution */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-                <div className="lg:col-span-2 bg-gradient-to-br from-[#2a2a2a] to-[#1f1f1f] rounded-2xl p-7 border border-[#333333] shadow-xl">
-                  <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                      <BarChart3 className="w-5 h-5 text-[#fb923c]" />
-                      Call Traffic Analysis
-                    </h3>
-                    <span className="text-xs text-gray-400">Last 7 Days</span>
-                  </div>
-                  <div className="space-y-3">
-                    {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map((day, idx) => {
-                      const values = [420, 385, 445, 398, 512, 289, 324];
-                      const maxVal = 512;
-                      const percentage = (values[idx] / maxVal) * 100;
-                      return (
-                        <div key={day}>
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm text-gray-400">{day}</span>
-                            <span className="text-sm font-semibold text-white">{values[idx]} calls</span>
-                          </div>
-                          <div className="w-full bg-[#1a1a1a] rounded-full h-2">
-                            <div 
-                              className="bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] h-2 rounded-full transition-all"
-                              style={{ width: `${percentage}%` }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="bg-gradient-to-br from-[#2a2a2a] to-[#1f1f1f] rounded-2xl p-7 border border-[#333333] shadow-xl">
-                  <div className="flex items-center gap-2 mb-6">
-                    <div className="w-10 h-10 rounded-full bg-[#fb923c]/10 flex items-center justify-center">
-                      <span className="text-lg">🌐</span>
-                    </div>
-                    <h3 className="text-xl font-bold text-white">Language Distribution</h3>
-                  </div>
-                  <div className="space-y-5">
-                    {[
-                      { lang: 'English', percentage: 68, color: 'bg-blue-500' },
-                      { lang: 'Spanish', percentage: 18, color: 'bg-green-500' },
-                      { lang: 'Mandarin', percentage: 7, color: 'bg-purple-500' },
-                      { lang: 'French', percentage: 4, color: 'bg-pink-500' },
-                      { lang: 'Other', percentage: 3, color: 'bg-gray-500' }
-                    ].map(item => (
-                      <div key={item.lang}>
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <div className={`w-3 h-3 rounded-full ${item.color}`} />
-                            <span className="text-sm text-gray-300">{item.lang}</span>
-                          </div>
-                          <span className="text-sm font-semibold text-white">{item.percentage}%</span>
-                        </div>
-                        <div className="w-full bg-[#1a1a1a] rounded-full h-2">
-                          <div 
-                            className={`${item.color} h-2 rounded-full transition-all`}
-                            style={{ width: `${item.percentage}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Response Times & Peak Hours */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-[#2a2a2a] rounded-xl p-6 border border-[#333333]">
-                  <h3 className="text-lg font-semibold text-white mb-4">Average Response Times</h3>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between p-4 bg-[#1f1f1f] rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <Ambulance className="w-6 h-6 text-blue-400" />
-                        <span className="text-sm text-gray-300">Medical Emergency</span>
-                      </div>
-                      <span className="text-lg font-bold text-blue-400">4.2 min</span>
-                    </div>
-                    <div className="flex items-center justify-between p-4 bg-[#1f1f1f] rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <Shield className="w-6 h-6 text-green-400" />
-                        <span className="text-sm text-gray-300">Police Emergency</span>
-                      </div>
-                      <span className="text-lg font-bold text-green-400">5.8 min</span>
-                    </div>
-                    <div className="flex items-center justify-between p-4 bg-[#1f1f1f] rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <Flame className="w-6 h-6 text-red-400" />
-                        <span className="text-sm text-gray-300">Fire Emergency</span>
-                      </div>
-                      <span className="text-lg font-bold text-red-400">3.9 min</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-[#2a2a2a] rounded-xl p-6 border border-[#333333]">
-                  <h3 className="text-lg font-semibold text-white mb-4">Peak Call Hours</h3>
-                  <div className="space-y-3">
-                    {[
-                      { time: '8:00 AM - 10:00 AM', calls: 145, percentage: 62 },
-                      { time: '12:00 PM - 2:00 PM', calls: 189, percentage: 81 },
-                      { time: '4:00 PM - 6:00 PM', calls: 234, percentage: 100 },
-                      { time: '8:00 PM - 10:00 PM', calls: 167, percentage: 71 },
-                      { time: '12:00 AM - 2:00 AM', calls: 98, percentage: 42 }
-                    ].map(item => (
-                      <div key={item.time}>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-sm text-gray-400">{item.time}</span>
-                          <span className="text-sm font-semibold text-white">{item.calls} calls</span>
-                        </div>
-                        <div className="w-full bg-[#1a1a1a] rounded-full h-2">
-                          <div 
-                            className="bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] h-2 rounded-full"
-                            style={{ width: `${item.percentage}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : activeNavItem === "admin" ? (
-          // Admin Panel - Full Screen Simple Layout
-          <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#0f0f0f] p-8">
-            <div className="max-w-7xl mx-auto">
-              {/* Admin Header */}
-              <div className="flex items-center gap-6 mb-8">
-                <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#fb923c] to-[#ea7b1a] flex items-center justify-center text-white text-3xl font-bold shadow-xl">
-                  AS
-                </div>
-                <div className="flex-1">
-                  <h1 className="text-4xl font-bold text-white mb-2">Administrator Control Panel</h1>
-                  <p className="text-gray-400 text-lg">Manage emergency services and system configuration</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2 bg-green-400/10 border border-green-400/30 rounded-lg px-4 py-2">
-                    <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                    <span className="text-sm font-semibold text-green-400">System Online</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Main Content - Two Column Layout */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Left Column - Emergency Contacts */}
-                <div>
-                  <div className="bg-gradient-to-br from-[#2a2a2a] to-[#1f1f1f] rounded-2xl p-7 border border-[#333333] shadow-xl">
-                    <div className="flex items-center gap-3 mb-6">
-                      <div className="w-12 h-12 rounded-xl bg-[#fb923c]/10 flex items-center justify-center">
-                        <Phone className="w-6 h-6 text-[#fb923c]" />
-                      </div>
-                      <div>
-                        <h2 className="text-2xl font-bold text-white">Emergency Contact Numbers</h2>
-                        <p className="text-sm text-gray-400">Configure direct dispatch routing</p>
-                      </div>
-                    </div>
-                    
-                    <div className="space-y-4">
-                      {/* Hospital/Medical */}
-                      <div className="bg-[#1a1a1a] rounded-xl p-5 border border-[#333333] hover:border-blue-400/50 transition-all">
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
-                            <Ambulance className="w-6 h-6 text-blue-400" />
-                          </div>
-                          <div>
-                            <h3 className="text-base font-bold text-white">Hospital / Medical Emergency</h3>
-                            <p className="text-xs text-gray-400">Ambulance services</p>
-                          </div>
-                        </div>
-                        <Input
-                          type="tel"
-                          placeholder="+1 (555) 000-0000"
-                          value={emergencyContacts.hospital}
-                          onChange={(e) => setEmergencyContacts({...emergencyContacts, hospital: e.target.value})}
-                          className="bg-[#0f0f0f] border-[#333333] text-white placeholder:text-gray-500 focus:border-blue-400 h-11"
-                        />
-                      </div>
-
-                      {/* Police */}
-                      <div className="bg-[#1a1a1a] rounded-xl p-5 border border-[#333333] hover:border-green-400/50 transition-all">
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center">
-                            <Shield className="w-6 h-6 text-green-400" />
-                          </div>
-                          <div>
-                            <h3 className="text-base font-bold text-white">Police Emergency</h3>
-                            <p className="text-xs text-gray-400">Law enforcement services</p>
-                          </div>
-                        </div>
-                        <Input
-                          type="tel"
-                          placeholder="+1 (555) 000-0000"
-                          value={emergencyContacts.police}
-                          onChange={(e) => setEmergencyContacts({...emergencyContacts, police: e.target.value})}
-                          className="bg-[#0f0f0f] border-[#333333] text-white placeholder:text-gray-500 focus:border-green-400 h-11"
-                        />
-                      </div>
-
-                      {/* Fire */}
-                      <div className="bg-[#1a1a1a] rounded-xl p-5 border border-[#333333] hover:border-red-400/50 transition-all">
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center">
-                            <Flame className="w-6 h-6 text-red-400" />
-                          </div>
-                          <div>
-                            <h3 className="text-base font-bold text-white">Fire Emergency</h3>
-                            <p className="text-xs text-gray-400">Fire department services</p>
-                          </div>
-                        </div>
-                        <Input
-                          type="tel"
-                          placeholder="+1 (555) 000-0000"
-                          value={emergencyContacts.fire}
-                          onChange={(e) => setEmergencyContacts({...emergencyContacts, fire: e.target.value})}
-                          className="bg-[#0f0f0f] border-[#333333] text-white placeholder:text-gray-500 focus:border-red-400 h-11"
-                        />
-                      </div>
-                    </div>
-
-                    <Button className="w-full mt-6 bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] hover:from-[#ea7b1a] hover:to-[#fb923c] text-white font-bold h-12">
-                      <CheckCircle className="w-5 h-5 mr-2" />
-                      Save Emergency Contacts
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Right Column - System Status */}
-                <div>
-                  <div className="bg-gradient-to-br from-[#2a2a2a] to-[#1f1f1f] rounded-2xl p-7 border border-[#333333] shadow-xl">
-                    <div className="flex items-center gap-3 mb-6">
-                      <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center">
-                        <Radio className="w-6 h-6 text-green-400" />
-                      </div>
-                      <div>
-                        <h2 className="text-2xl font-bold text-white">System Health</h2>
-                        <p className="text-sm text-gray-400">Service monitoring</p>
-                      </div>
-                    </div>
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between p-4 bg-[#1a1a1a] rounded-lg border border-[#333333]">
-                        <div className="flex items-center gap-3">
-                          <CheckCircle className="w-5 h-5 text-green-400" />
-                          <span className="text-sm font-medium text-white">API Server</span>
-                        </div>
-                        <span className="text-xs font-bold text-green-400">Online</span>
-                      </div>
-                      <div className="flex items-center justify-between p-4 bg-[#1a1a1a] rounded-lg border border-[#333333]">
-                        <div className="flex items-center gap-3">
-                          <CheckCircle className="w-5 h-5 text-green-400" />
-                          <span className="text-sm font-medium text-white">Database</span>
-                        </div>
-                        <span className="text-xs font-bold text-green-400">Connected</span>
-                      </div>
-                      <div className="flex items-center justify-between p-4 bg-[#1a1a1a] rounded-lg border border-[#333333]">
-                        <div className="flex items-center gap-3">
-                          <CheckCircle className="w-5 h-5 text-green-400" />
-                          <span className="text-sm font-medium text-white">WebSocket</span>
-                        </div>
-                        <span className="text-xs font-bold text-green-400">Active</span>
-                      </div>
-                      <div className="flex items-center justify-between p-4 bg-[#1a1a1a] rounded-lg border border-[#333333]">
-                        <div className="flex items-center gap-3">
-                          <CheckCircle className="w-5 h-5 text-green-400" />
-                          <span className="text-sm font-medium text-white">AI Services</span>
-                        </div>
-                        <span className="text-xs font-bold text-green-400">Operational</span>
-                      </div>
-                      <div className="flex items-center justify-between p-4 bg-[#1a1a1a] rounded-lg border border-[#333333]">
-                        <div className="flex items-center gap-3">
-                          <User className="w-5 h-5 text-blue-400" />
-                          <span className="text-sm font-medium text-white">Active Dispatchers</span>
-                        </div>
-                        <span className="text-xs font-bold text-white">28</span>
-                      </div>
-                      <div className="flex items-center justify-between p-4 bg-[#1a1a1a] rounded-lg border border-[#333333]">
-                        <div className="flex items-center gap-3">
-                          <Info className="w-5 h-5 text-[#fb923c]" />
-                          <span className="text-sm font-medium text-white">System Uptime</span>
-                        </div>
-                        <span className="text-xs font-bold text-green-400">99.97%</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : activeNavItem === "dispatch" ? (
-          // Dispatch Emergency Routing Map - Full Screen
-          Object.keys(locationData).length > 0 ? (
-            <DispatchMap
-              ref={dispatchMapRef}
-              callerLatitude={Object.values(locationData)[0].latitude}
-              callerLongitude={Object.values(locationData)[0].longitude}
-              callerAddress={Object.values(locationData)[0].address}
-              selectedType={dispatchEmergencyType}
-              onStationsFound={(stations) => setDispatchStations(stations)}
-            />
-          ) : (
-            // Show message when no location data
-            <div className="flex-1 flex items-center justify-center bg-[#1a1a1a]">
-              <div className="text-center">
-                <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                <h3 className="text-lg font-semibold text-white mb-2">No Caller Location Available</h3>
-                <p className="text-sm text-gray-400 max-w-md">
-                  Send a location tracking link from the Messages tab to receive the caller's GPS coordinates,<br />
-                  then return here to dispatch emergency services.
-                </p>
-              </div>
-            </div>
-          )
-        ) : activeNavItem === "calls" && conversation.length === 0 && !selectedCallerNumber ? (
-          // Full-width map view when no active calls
-          <div className="flex-1 flex flex-col bg-[#1a1a1a] min-w-0">
-            <div className="flex-1 p-4">
-              <div className="w-full h-full bg-[#2a2a2a] rounded-lg overflow-hidden border border-[#333333]">
-                <MapView
-                  latitude={mapLocation.latitude}
-                  longitude={mapLocation.longitude}
-                  zoom={11}
-                  isFullScreen={true}
-                  onLocationUpdate={(lat, lng) => {
-                    setMapLocation(prev => ({
-                      ...prev,
-                      latitude: lat,
-                      longitude: lng
-                    }));
-                  }}
-                  onServicesUpdate={(services) => {
-                    const servicesMap: any = {};
-                    services.forEach(service => {
-                      servicesMap[service.type] = {
-                        name: service.name,
-                        distance: service.distance
-                      };
-                    });
-                    setNearestServices(servicesMap);
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-        ) : (
-          // Normal conversation view
-          <div className="flex-1 flex flex-col bg-[#1a1a1a] min-w-0">
-          <div className="border-b border-[#333333] bg-[#1f1f1f] p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="text-base font-semibold">
-                  {activeNavItem === "training"
-                    ? (trainingLogs[selectedIncident] ? `Training #${selectedIncident + 1}` : "Training Session")
-                    : calls[selectedIncident].phone
-                  }
-                </h3>
-                <div className="flex items-center gap-2">
-                  <p className="text-sm text-[#b5b5b5]">
-                    {activeNavItem === "training"
-                      ? (activeTrainingSession ? "Active Training Session" : "Training Session")
-                      : (isLiveCall ? "Live Call" : "Incoming Call")
-                    }
-                  </p>
-                  {activeNavItem === "training" && activeTrainingSession && (
-                    <>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">
-                        ✓ Training Active
-                      </span>
-                      {isTrainingSpeechActive && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 flex items-center gap-1">
-                          <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                          Listening
-                        </span>
-                      )}
-                    </>
-                  )}
-                  {activeNavItem !== "training" && selectedCallerNumber && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${transcriptionConnected
-                      ? 'bg-green-500/20 text-green-400'
-                      : 'bg-yellow-500/20 text-yellow-400'
-                      }`}>
-                      {transcriptionConnected ? '✓ Connected' : '⟳ Connecting...'}
-                    </span>
-                  )}
-                </div>
-              </div>
-              {activeNavItem === "training" ? (
-                // Training action buttons
-                <div className="flex items-center gap-2">
-                  {activeTrainingSession && (
-                    <>
-                      <Button
-                        onClick={isTrainingSpeechActive ? stopSpeechRecognition : startSpeechRecognition}
-                        variant={isTrainingSpeechActive ? "default" : "outline"}
-                        className={`text-sm px-3 py-2 h-9 flex items-center gap-2 ${isTrainingSpeechActive
-                            ? "bg-green-600 hover:bg-green-700 border-green-600 text-white"
-                            : "bg-transparent border-[#333333] hover:bg-[#2a2a2a] text-white"
-                          }`}
-                      >
-                        {isTrainingSpeechActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                        {isTrainingSpeechActive ? "Stop Voice" : "Voice Mode"}
-                      </Button>
-                      <Button
-                        onClick={handleEndTraining}
-                        variant="outline"
-                        className="bg-red-600 hover:bg-red-700 border-red-600 text-white text-sm px-3 py-2 h-9"
-                      >
-                        End Training
-                      </Button>
-                    </>
-                  )}
-                  {trainingConfidence && (
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-2 px-3 py-2 bg-[#262626] rounded-lg border border-[#333333]">
-                        <GraduationCap className="w-4 h-4 text-[#fb923c]" />
-                        <div className="text-sm">
-                          <span className="text-[#b5b5b5]">Assessment: </span>
-                          <span className={`font-semibold ${trainingConfidence >= 85 ? 'text-emerald-400' :
-                              trainingConfidence >= 70 ? 'text-green-400' :
-                                trainingConfidence >= 60 ? 'text-yellow-400' : 'text-red-400'
-                            }`}>
-                            {trainingConfidence}% {
-                              trainingConfidence >= 85 ? '• Excellent' :
-                                trainingConfidence >= 70 ? '• Good' :
-                                  trainingConfidence >= 60 ? '• Satisfactory' : '• Needs Improvement'
-                            }
-                          </span>
-                        </div>
-                      </div>
-                      {trainingEvaluation && (
-                        <Button
-                          onClick={() => {
-                            // Find the current training log to show its evaluation
-                            const currentLog = trainingLogs[selectedIncident];
-                            if (currentLog && currentLog.confidence_score && currentLog.evaluation) {
-                              setTrainingConfidence(currentLog.confidence_score);
-                              setTrainingEvaluation(currentLog.evaluation);
-                            }
-                          }}
-                          variant="outline"
-                          size="sm"
-                          className="bg-[#fb923c] hover:bg-[#ea7b1a] border-[#fb923c] text-white text-xs px-3 py-1 h-8"
-                        >
-                          <Sparkles className="w-3 h-3 mr-1" />
-                          View Results
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                // Regular call action buttons
-                !isLiveCall && (
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Select defaultValue="noise">
-                      <SelectTrigger className="w-[160px] bg-[#2d2d2d] border-[#333333] text-sm text-white hover:bg-[#333333] focus:ring-1 focus:ring-[#3b82f6] h-9 rounded-md hover-orange">
-                        <SelectValue placeholder="Select type" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-[#2d2d2d] border-[#333333] text-white">
-                        <SelectItem value="noise" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Noise Complaint</SelectItem>
-                        <SelectItem value="fire" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Fire Emergency</SelectItem>
-                        <SelectItem value="medical" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Medical</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      onClick={handleShare}
-                      variant="outline"
-                      className="bg-transparent border-[#333333] hover:bg-[#2a2a2a] text-sm px-3 py-2 h-9 hover-orange"
-                    >
-                      <Share2 className="w-4 h-4 mr-2" />
-                      <span>Share</span>
-                    </Button>
-                    <Button
-                      onClick={handleManage}
-                      variant="outline"
-                      className="bg-transparent border-[#333333] hover:bg-[#2a2a2a] text-sm px-3 py-2 h-9 hover-orange"
-                    >
-                      <span>Manage</span>
-                      <ChevronDown className="w-4 h-4 ml-2" />
-                    </Button>
-                  </div>
-                )
-              )}
-            </div>
-            <div className="flex items-center gap-4 flex-wrap mt-2">
-              {/* Device Info Section */}
-              <div className="flex items-center gap-2">
-                <div className="w-10 h-10 rounded-full bg-[#3a3a3a] flex items-center justify-center">
-                  <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M2 18h3v2H2v-2zm0-4h3v6H2v-6zm4 0h3v6H6v-6zm4-4h3v10h-3V10zm4-4h3v14h-3V6zm4-4h3v18h-3V2z" />
-                  </svg>
-                </div>
-                <div>
-                  <div className="text-[10px] text-[#888888] uppercase tracking-wider font-medium">DEVICE INFO</div>
-                  <div className="text-xs text-[#b5b5b5]">Android Device</div>
-                </div>
-              </div>
-
-              {/* Emergency Data Section */}
-              <div className="flex items-center gap-2">
-                <div className="w-10 h-10 rounded-full bg-red-600 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z" />
-                    <circle cx="9" cy="10" r="2" />
-                    <path d="M15 11h4v1h-4z" />
-                    <path d="M15 13h4v1h-4z" />
-                  </svg>
-                </div>
-                <div>
-                  <div className="text-[10px] text-[#888888] uppercase tracking-wider font-medium">EMERGENCY DATA</div>
-                  <div className="text-xs text-[#b5b5b5]">View</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Select
-                  value={detectedLanguage.toLowerCase()}
-                  onValueChange={(val) => {
-                    const langMap: Record<string, string> = {
-                      // Major world languages
-                      spanish: "Spanish",
-                      english: "English",
-                      french: "French",
-                      german: "German",
-                      italian: "Italian",
-                      portuguese: "Portuguese",
-                      russian: "Russian",
-                      japanese: "Japanese",
-                      korean: "Korean",
-                      chinese: "Chinese",
-                      arabic: "Arabic",
-                      // 22 Official Languages of India
-                      hindi: "Hindi",
-                      bengali: "Bengali",
-                      telugu: "Telugu",
-                      marathi: "Marathi",
-                      tamil: "Tamil",
-                      urdu: "Urdu",
-                      gujarati: "Gujarati",
-                      kannada: "Kannada",
-                      odia: "Odia",
-                      malayalam: "Malayalam",
-                      punjabi: "Punjabi",
-                      assamese: "Assamese",
-                      maithili: "Maithili",
-                      santali: "Santali",
-                      kashmiri: "Kashmiri",
-                      nepali: "Nepali",
-                      sindhi: "Sindhi",
-                      konkani: "Konkani",
-                      dogri: "Dogri",
-                      manipuri: "Manipuri",
-                      bodo: "Bodo",
-                      sanskrit: "Sanskrit",
-                      mandarin: "Chinese"
-                    };
-                    setDetectedLanguage(langMap[val] || "English");
-                  }}
-                >
-                  <SelectTrigger className="w-[140px] bg-[#2d2d2d] border-[#333333] text-sm text-white hover:bg-[#333333] focus:ring-1 focus:ring-[#3b82f6] h-9 rounded-md hover-orange">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#2d2d2d] border-[#333333] text-white max-h-[400px] overflow-y-auto">
-                    {/* Common Languages */}
-                    <div className="px-2 py-1.5 text-xs font-semibold text-[#888888] uppercase tracking-wider">Common</div>
-                    <SelectItem value="english" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">English</SelectItem>
-                    <SelectItem value="spanish" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Spanish</SelectItem>
-                    <SelectItem value="french" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">French</SelectItem>
-                    <SelectItem value="chinese" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Chinese</SelectItem>
-                    <SelectItem value="arabic" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Arabic</SelectItem>
-
-                    {/* Indian Languages - 22 Official */}
-                    <div className="px-2 py-1.5 text-xs font-semibold text-[#fb923c] uppercase tracking-wider mt-2">🇮🇳 Indian Languages</div>
-                    <SelectItem value="hindi" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Hindi (हिन्दी)</SelectItem>
-                    <SelectItem value="bengali" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Bengali (বাংলা)</SelectItem>
-                    <SelectItem value="telugu" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Telugu (తెలుగు)</SelectItem>
-                    <SelectItem value="marathi" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Marathi (मराठी)</SelectItem>
-                    <SelectItem value="tamil" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Tamil (தமிழ்)</SelectItem>
-                    <SelectItem value="urdu" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Urdu (اردو)</SelectItem>
-                    <SelectItem value="gujarati" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Gujarati (ગુજરાતી)</SelectItem>
-                    <SelectItem value="kannada" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Kannada (ಕನ್ನಡ)</SelectItem>
-                    <SelectItem value="odia" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Odia (ଓଡ଼ିଆ)</SelectItem>
-                    <SelectItem value="malayalam" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Malayalam (മലയാളം)</SelectItem>
-                    <SelectItem value="punjabi" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Punjabi (ਪੰਜਾਬੀ)</SelectItem>
-                    <SelectItem value="assamese" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Assamese (অসমীয়া)</SelectItem>
-                    <SelectItem value="maithili" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Maithili (मैथिली)</SelectItem>
-                    <SelectItem value="santali" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Santali (ᱥᱟᱱᱛᱟᱲᱤ)</SelectItem>
-                    <SelectItem value="kashmiri" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Kashmiri (कॉशुर)</SelectItem>
-                    <SelectItem value="nepali" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Nepali (नेपाली)</SelectItem>
-                    <SelectItem value="sindhi" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Sindhi (سنڌي)</SelectItem>
-                    <SelectItem value="konkani" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Konkani (कोंकणी)</SelectItem>
-                    <SelectItem value="dogri" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Dogri (डोगरी)</SelectItem>
-                    <SelectItem value="manipuri" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Manipuri (মৈতৈলোন্)</SelectItem>
-                    <SelectItem value="bodo" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Bodo (बड़ो)</SelectItem>
-                    <SelectItem value="sanskrit" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Sanskrit (संस्कृतम्)</SelectItem>
-
-                    {/* Other Languages */}
-                    <div className="px-2 py-1.5 text-xs font-semibold text-[#888888] uppercase tracking-wider mt-2">Other</div>
-                    <SelectItem value="german" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">German</SelectItem>
-                    <SelectItem value="italian" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Italian</SelectItem>
-                    <SelectItem value="portuguese" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Portuguese</SelectItem>
-                    <SelectItem value="russian" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Russian</SelectItem>
-                    <SelectItem value="japanese" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Japanese</SelectItem>
-                    <SelectItem value="korean" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Korean</SelectItem>
-                  </SelectContent>
-                </Select>
-                {isTranslating && (
-                  <div className="flex items-center gap-1 text-xs text-blue-400">
-                    <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse"></div>
-                    <span>Translating...</span>
-                  </div>
-                )}
-              </div>
-              {!isLiveCall && (
-                <Select defaultValue="media">
-                  <SelectTrigger className="w-[120px] bg-[#2d2d2d] border-[#333333] text-sm text-white hover:bg-[#333333] focus:ring-1 focus:ring-[#3b82f6] h-9 rounded-md hover-orange">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#2d2d2d] border-[#333333] text-white">
-                    <SelectItem value="media" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Media</SelectItem>
-                    <SelectItem value="audio" className="text-white hover:bg-[#333333] focus:bg-[#333333] hover-orange cursor-pointer data-[state=checked]:text-[#fb923c] data-[state=checked]:bg-[#fb923c]/10">Audio Only</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
-
-            {/* Live Audio Stream Visualization - Only show for live calls */}
-            {isLiveCall && (
-              <div className="mt-3 flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-[#fb923c] rounded-full animate-pulse"></div>
-                  <span className="text-xs text-[#fb923c] font-semibold">LIVE</span>
-                </div>
-                <div className="flex-1 relative h-8 flex items-center">
-                  <div
-                    className="w-full h-[2px] bg-[#fb923c] rounded-full transition-all duration-1000 ease-in-out"
-                    style={{
-                      boxShadow: `0 0 ${8 + Math.sin(audioLevel * 0.05) * 6}px #fb923c, 0 0 ${16 + Math.sin(audioLevel * 0.05) * 10}px #fb923c`,
-                      opacity: 0.5 + Math.sin(audioLevel * 0.05) * 0.3
-                    }}
-                  ></div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3">
-            {/* Show conversation messages */}
-            {(activeNavItem === "training" ? trainingConversation : conversation).map((msg, idx) => (
-              <div key={idx} className={`flex ${msg.sender === 'Caller' ? 'justify-start' : 'justify-end'}`}>
-                <div className="max-w-[70%] space-y-1">
-                  <div className={`flex items-center gap-2 text-xs text-[#8a8a8a] ${msg.sender === 'Caller' ? 'justify-start' : 'justify-end'}`}>
-                    <span className={msg.sender === 'Caller' ? 'font-medium' : ''}>{msg.sender}</span>
-                    <span>|</span>
-                    <span>{msg.time}</span>
-                  </div>
-                  <div className={`flex items-start gap-2 ${msg.sender === 'Caller' ? 'flex-row' : 'flex-row-reverse'}`}>
-                    {msg.sender === 'Caller' && (
-                      <div className="flex items-center gap-0.5 mt-1">
-                        <Volume2 className="w-4 h-4 text-[#8a8a8a]" />
-                      </div>
-                    )}
-                    <div className={`rounded-lg px-4 py-2.5 bg-[#262626] ${!msg.is_final ? 'opacity-60' : ''}`}>
-                      {msg.isTranslated && msg.originalMessage ? (
-                        <div className="space-y-2">
-                          {/* Original Message */}
-                          <div className="pb-2 border-b border-[#3a3a3a]">
-                            <div className="flex items-center gap-1.5 mb-1">
-                              <span className="text-[10px] text-[#888888] uppercase tracking-wider font-medium">Original</span>
-                            </div>
-                            <p className={`text-sm leading-relaxed ${msg.sender === 'Caller' ? 'text-[#b5b5b5]' : 'text-[#888888]'}`} style={{ lineHeight: '1.5' }}>
-                              {msg.originalMessage}
-                            </p>
-                          </div>
-                          {/* Translated Message */}
-                          <div className="relative">
-                            <div className="flex items-center justify-between gap-2 mb-1">
-                              <span className="text-[10px] text-[#fb923c] uppercase tracking-wider font-medium">Translated</span>
-                              <svg className="w-3.5 h-3.5 text-[#fb923c]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
-                              </svg>
-                            </div>
-                            <p className={`text-sm leading-relaxed ${msg.sender === 'Caller' ? 'text-white font-medium' : 'text-[#b5b5b5]'}`} style={{ lineHeight: '1.5' }}>
-                              {msg.message}
-                            </p>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className={`text-sm leading-relaxed ${msg.sender === 'Caller' ? 'text-white font-medium' : 'text-[#b5b5b5]'}`} style={{ lineHeight: '1.5' }}>
-                          {msg.message}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-            <div ref={conversationEndRef} />
-
-            {/* Debug Info - Only show for live calls, not in training mode */}
-            {conversation.length === 0 && selectedCallerNumber && activeNavItem !== "training" && !activeTrainingSession && (
-              <div className="text-center p-8">
-                <div className="bg-[#262626] rounded-lg p-4 text-left text-xs space-y-2">
-                  <p className="text-[#fb923c] font-semibold">🔍 Debug Info:</p>
-                  <p className="text-[#b5b5b5]">Selected Number: <span className="text-white">{selectedCallerNumber}</span></p>
-                  <p className="text-[#b5b5b5]">Call SID: <span className="text-white">{selectedCallSid || 'None'}</span></p>
-                  <p className="text-[#b5b5b5]">WebSocket Status: <span className={transcriptionConnected ? 'text-green-400' : 'text-yellow-400'}>{transcriptionConnected ? 'Connected ✓' : 'Connecting...'}</span></p>
-                  <p className="text-[#b5b5b5]">Notifications WS: <span className={notificationsConnected ? 'text-green-400' : 'text-red-400'}>{notificationsConnected ? 'Connected ✓' : 'Disconnected ✗'}</span></p>
-                  <p className="text-[#9e9e9e] mt-2">Waiting for transcriptions...</p>
-                  <p className="text-[#9e9e9e] text-xs">Check browser console (F12) for detailed logs</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Microphone and Message Controls */}
-          {isLiveCall && selectedCallSid && (
-            <div className="border-t border-[#333333] p-3 bg-[#1f1f1f]">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Button
-                    onClick={toggleMicrophone}
-                    variant={isMicActive ? "default" : "outline"}
-                    size="sm"
-                    className={isMicActive ? "bg-red-600 hover:bg-red-700 border-red-600" : "bg-transparent border-[#333333] hover:bg-[#2a2a2a]"}
-                  >
-                    {isMicActive ? <MicOff className="w-4 h-4 mr-2" /> : <Mic className="w-4 h-4 mr-2" />}
-                    {isMicActive ? "Stop" : "Speak"}
+      <div ref={containerRef} className="flex flex-1 overflow-hidden">
+         {/* View: Calls / Dashboard (The 3-column layout) */}
+         {(activeNavItem === 'calls' || activeNavItem === 'dashboard') && (
+         <>
+         {/* Left Sidebar */}
+         <aside className="w-80 border-r border-[#2a2a2a] flex flex-col bg-[#0a0a0a]">
+            <div className="p-4 border-b border-[#2a2a2a]">
+               <div className="flex items-center justify-between mb-4">
+                  <div className="text-sm font-medium text-gray-400 flex items-center gap-1">Incidents</div>
+                  <Button size="icon" className="h-8 w-8 bg-[#5B5FED] hover:bg-[#4a4ec0] rounded-md">
+                     <Plus className="w-5 h-5" />
                   </Button>
-                  {isMicActive && (
-                    <div className="flex items-center gap-2">
-                      <Volume2 className="w-4 h-4 text-[#fb923c]" />
-                      <div className="w-24 h-2 bg-[#2a2a2a] rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-[#fb923c] transition-all duration-100"
-                          style={{ width: `${audioLevel}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Quick Message Field (Ctrl+Shift to activate) */}
-          {isMessageFieldVisible && (
-            <div className="border-t border-[#333333] p-3 bg-[#1f1f1f]">
-              <div className="flex items-center gap-2">
-                <Input
-                  ref={messageInputRef}
-                  value={messageText}
-                  onChange={(e) => setMessageText(e.target.value)}
-                  placeholder="Type a message... (Press Enter to send, Esc to close)"
-                  className="flex-1 h-8 text-sm bg-[#2a2a2a] border-[#333333] text-white placeholder:text-[#b5b5b5] focus:border-[#fb923c] focus:ring-2 focus:ring-[#fb923c]/50 transition-all"
-                  style={{
-                    boxShadow: messageText ? '0 0 8px rgba(251, 146, 60, 0.3)' : 'none'
-                  }}
-                />
-                {/* Speech button only for training */}
-                {activeNavItem === "training" && (
-                  <Button
-                    onClick={isTrainingSpeechActive ? stopSpeechRecognition : startSpeechRecognition}
-                    variant={isTrainingSpeechActive ? "default" : "outline"}
-                    className={`h-8 px-3 ${isTrainingSpeechActive ?
-                      "bg-red-600 hover:bg-red-700 border-red-600" :
-                      "bg-transparent border-[#333333] hover:bg-[#2a2a2a]"
-                      }`}
-                  >
-                    {isTrainingSpeechActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+               </div>
+               <div className="relative mb-3">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  <Input placeholder="Search Incidents" className="pl-9 bg-[#1a1a1a] border-[#333] text-sm h-9 text-white placeholder:text-gray-600 focus-visible:ring-1 focus-visible:ring-[#5B5FED]" />
+               </div>
+               <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer hover:text-white">
+                     All Calls <ChevronDown className="w-3 h-3" />
+                  </div>
+                  <Button variant="ghost" size="icon" className="h-6 w-6 text-gray-500 hover:text-white">
+                     <RefreshCw className="w-3 h-3" />
                   </Button>
-                )}
-                <Button
-                  onClick={handleSendMessage}
-                  className="h-8 px-3 bg-[#fb923c] hover:bg-[#fb923c]/80 text-white"
-                  disabled={!messageText.trim()}
-                >
-                  <Send className="w-4 h-4" />
-                </Button>
-              </div>
-              <p className="text-xs text-[#8a8a8a] mt-2">
-                {activeNavItem === "training"
-                  ? "Press Ctrl+Shift to toggle message field | Click mic to speak or type to respond"
-                  : "Press Ctrl+Shift to toggle message field"
-                }
-              </p>
+               </div>
             </div>
-          )}
-
-          {!isMessageFieldVisible && !isLiveCall && (
-            <div className="border-t border-[#333333] p-2 bg-[#1f1f1f] text-center">
-              <p className="text-xs text-[#8a8a8a]">Press <span className="text-[#fb923c] font-medium">Ctrl+Shift</span> to send a message</p>
-            </div>
-          )}
-        </div >
-        )}
-
-        {/* Right Resize Handle - Hidden when showing full map */}
-        {!(activeNavItem === "calls" && conversation.length === 0 && !selectedCallerNumber) && (
-          <div
-            className="w-1 bg-white/5 cursor-col-resize flex items-center justify-center group relative resize-handle"
-            onMouseDown={() => setIsResizingRight(true)}
-          >
-            <div className="absolute inset-y-0 -left-1 -right-1" />
-            <GripVertical className="w-3 h-3 text-gray-500 group-hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
-          </div>
-        )}
-
-        {/* Right Panel - Insights OR Dispatch Controls - Show for calls and training, hide for admin and analytics */}
-        {!(activeNavItem === "dispatch" || activeNavItem === "admin" || activeNavItem === "analytics") && (
-          <div id="right-panel" style={{ width: `${rightWidth}px` }} className="border-l border-[#333333] bg-[#1f1f1f] flex flex-col flex-shrink-0">
-          <div className="border-b border-[#333333]">
-            <nav className="flex items-center px-2 overflow-x-auto justify-between">
-              <div className="flex items-center">
-                  {activeNavItem === "calls" && (
-                    <button
-                      onClick={() => handleTabClick("messages")}
-                      className={`px-3 py-3 whitespace-nowrap text-sm hover-orange ${activeTab === "messages" ? "text-white border-b-2 border-white font-medium" : "text-[#b5b5b5]"
-                        }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <MessageSquare className="w-4 h-4" />
-                        <span>Messages</span>
-                        {activeMessages.length > 0 && (
-                          <span className="ml-1 px-1.5 py-0.5 bg-[#fb923c] text-white text-xs rounded-full">
-                            {activeMessages.length}
-                          </span>
-                        )}
-                      </div>
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleTabClick("insights")}
-                    className={`px-3 py-3 whitespace-nowrap text-sm hover-orange ${activeTab === "insights" ? "text-white border-b-2 border-white font-medium" : "text-[#b5b5b5]"
-                      }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="w-4 h-4" />
-                      <span>Insights</span>
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => handleTabClick("protocol")}
-                    className={`px-3 py-3 whitespace-nowrap text-sm hover-orange ${activeTab === "protocol" ? "text-white border-b-2 border-white font-medium" : "text-[#b5b5b5]"
-                      }`}
-                  >
-                    Protocol
-                  </button>
-                  <button
-                    onClick={() => handleTabClick("location")}
-                    className={`px-3 py-3 whitespace-nowrap text-sm hover-orange ${activeTab === "location" ? "text-white border-b-2 border-white font-medium" : "text-[#b5b5b5]"
-                      }`}
-                  >
-                    Location
-                  </button>
-                  <button
-                    onClick={() => handleTabClick("media")}
-                    className={`px-3 py-3 whitespace-nowrap text-sm hover-orange ${activeTab === "media" ? "text-white border-b-2 border-white font-medium" : "text-[#b5b5b5]"
-                      }`}
-                  >
-                    Media
-                  </button>
-                {activeNavItem === "training" && (
-                  <button
-                    onClick={() => handleTabClick("results")}
-                    className={`px-3 py-3 whitespace-nowrap text-sm hover-orange ${activeTab === "results" ? "text-white border-b-2 border-white font-medium" : "text-[#b5b5b5]"
-                      }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <GraduationCap className="w-4 h-4" />
-                      <span>Results</span>
-                    </div>
-                  </button>
-                )}
-                </div>
-                <button
-                  onClick={() => setIsSplitView(!isSplitView)}
-                  className="px-3 py-2 text-sm text-[#b5b5b5] hover:text-white transition-colors"
-                  title={isSplitView ? "Exit split view" : "Split view"}
-                >
-                  <GripVertical className={`w-4 h-4 ${isSplitView ? 'rotate-90' : ''}`} />
-                </button>
-            </nav>
-          </div>
-
-          {!isSplitView ? (
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3">
-              {activeTab === "messages" && (
-                <div className="space-y-3">
-                  {activeMessages.length === 0 ? (
-                    <div className="bg-[#2a2a2a] rounded-lg p-8 text-center">
-                      <MessageSquare className="w-12 h-12 mx-auto mb-3 text-gray-500" />
-                      <h4 className="text-base font-semibold text-white mb-2">No Active Messages</h4>
-                      <p className="text-sm text-gray-400">
-                        Messages will appear here when callers need location tracking links.
-                      </p>
-                    </div>
-                  ) : (
-                    activeMessages.map((msg, idx) => (
-                      <div
-                        key={idx}
-                        className={`bg-[#2a2a2a] rounded-lg p-4 border transition-colors ${
-                          selectedMessage === msg.number
-                            ? "border-[#fb923c]"
-                            : "border-[#333333] hover:border-[#444444]"
-                        }`}
-                      >
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-full bg-[#1a1a1a] flex items-center justify-center">
-                              <Phone className="w-5 h-5 text-blue-400" />
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold text-white">{msg.number}</p>
-                              <p className="text-xs text-gray-400">
-                                {new Date(msg.timestamp).toLocaleString('en-US', {
-                                  month: 'short',
-                                  day: 'numeric',
-                                  hour: '2-digit',
-                                  minute: '2-digit'
-                                })}
-                              </p>
-                            </div>
-                          </div>
-                          {linkSent[msg.number] ? (
-                            <div className="flex items-center gap-1.5 px-2 py-1 bg-[#fb923c]/20 text-[#fb923c] rounded text-xs">
-                              <CheckCircle className="w-3 h-3" />
-                              <span>Link Sent</span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-500/20 text-gray-400 rounded text-xs">
-                              <MapPin className="w-3 h-3" />
-                              <span>Pending</span>
-                            </div>
-                          )}
+            
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+               {calls.map((call, idx) => (
+                  <div key={idx} 
+                       className={`p-3 border-b border-[#1a1a2a] cursor-pointer hover:bg-[#1a1a1a] transition-colors relative ${idx === selectedIncident ? 'bg-gradient-to-r from-[#1a1a1a] to-[#1e1e2e]' : ''}`}
+                       onClick={() => {
+                         // Only clear if switching to a different call
+                         if (idx !== selectedIncident) {
+                           console.log('🔄 Switching to different call - clearing conversation');
+                           setConversation([]);
+                           setInsights({
+                             summary: "",
+                             location: [],
+                             persons_described: [],
+                             additional_info: [],
+                             incident: {},
+                             time_info: {},
+                             new_information_found: false
+                           });
+                           // Reset insights extractor
+                           if (insightsExtractorRef.current) {
+                             insightsExtractorRef.current = getInsightsExtractor();
+                           }
+                         }
+                         
+                         setSelectedIncident(idx);
+                         // Set the caller number for WebSocket connection
+                         if (call.phone && call.isLive) {
+                           setSelectedCallerNumber(call.phone);
+                           setIsLiveCall(true);
+                           console.log('📞 Selected live call:', call.phone);
+                         } else {
+                           setSelectedCallerNumber(null);
+                           setIsLiveCall(false);
+                         }
+                       }}>
+                     {idx === selectedIncident && <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#5B5FED]"></div>}
+                     <div className="flex items-start gap-3">
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${call.isLive ? 'bg-blue-900/30 text-blue-400' : 'bg-gray-800 text-gray-400'}`}>
+                           <Phone className="w-4 h-4" />
                         </div>
-
-                        <div className="space-y-2">
-                          {locationData[msg.number] ? (
-                            // Show location details when received
-                            <div className="bg-[#1e1e1e] border border-[#333333] rounded-lg p-3 space-y-3">
-                              <div className="flex items-start gap-3">
-                                <div className="w-8 h-8 rounded-full bg-[#262626] flex items-center justify-center flex-shrink-0">
-                                  <MapPin className="w-4 h-4 text-[#fb923c]" />
-                                </div>
-                                <div className="flex-1 space-y-2">
-                                  <div>
-                                    <p className="text-xs text-[#9e9e9e] mb-1">Location Details</p>
-                                    <p className="text-sm text-white font-medium leading-snug">
-                                      {locationData[msg.number].address}
-                                    </p>
-                                  </div>
-                                  <div className="grid grid-cols-2 gap-2 text-xs">
-                                    <div>
-                                      <p className="text-[#6b6b6b] mb-0.5">Latitude</p>
-                                      <p className="text-[#b5b5b5] font-mono">{locationData[msg.number].latitude.toFixed(6)}</p>
-                                    </div>
-                                    <div>
-                                      <p className="text-[#6b6b6b] mb-0.5">Longitude</p>
-                                      <p className="text-[#b5b5b5] font-mono">{locationData[msg.number].longitude.toFixed(6)}</p>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-1.5 text-xs text-[#6b6b6b]">
-                                    <span>Received:</span>
-                                    <span className="text-[#9e9e9e]">
-                                      {new Date(locationData[msg.number].timestamp).toLocaleTimeString('en-US', {
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                        second: '2-digit'
-                                      })}
-                                    </span>
-                                  </div>
-                                </div>
+                        <div className="flex-1 min-w-0">
+                           <div className="flex items-center justify-between mb-1">
+                              <span className={`text-sm font-medium ${idx === selectedIncident ? 'text-white' : 'text-gray-300'}`}>{call.phone}</span>
+                              <div className="text-xs text-gray-500 flex flex-col items-end">
+                                 <span>{call.date}</span>
+                                 <span className="bg-[#1a1a1a] px-1.5 py-0.5 rounded text-[10px] mt-1 border border-[#333]">{call.time}</span>
                               </div>
-                              <button
-                                onClick={() => {
-                                  const loc = locationData[msg.number];
-                                  setMapLocation({
-                                    latitude: loc.latitude,
-                                    longitude: loc.longitude,
-                                    address: loc.address || 'Unknown',
-                                    district: 'Caller Location'
-                                  });
-                                  toast({
-                                    title: "Map Updated",
-                                    description: "Centered on caller's location"
-                                  });
-                                }}
-                                className="w-full px-3 py-2 bg-[#fb923c] hover:bg-[#ea7b1a] text-white text-xs rounded transition-colors flex items-center justify-center gap-2 font-medium"
-                              >
-                                <MapPin className="w-3.5 h-3.5" />
-                                View on Map
-                              </button>
-                            </div>
-                          ) : (
-                            // Show send link UI when no location
-                            <>
-                              <p className="text-xs text-gray-400">
-                                {linkSent[msg.number] 
-                                  ? "Location tracking link has been sent to this caller. Awaiting their location data."
-                                  : "Caller needs location tracking. Send an SMS with a tracking link to receive their real-time location."}
-                              </p>
-                              
-                              {!linkSent[msg.number] && (
-                                <button
-                                  onClick={() => handleSendTrackingLink(msg.number)}
-                                  className="w-full px-4 py-2 bg-[#fb923c] hover:bg-[#ea7b1a] text-white text-sm rounded transition-colors flex items-center justify-center gap-2"
-                                >
-                                  <Send className="w-4 h-4" />
-                                  Send Location Tracking Link
-                                </button>
-                              )}
-
-                              {linkSent[msg.number] && (
-                                <div className="flex items-center gap-2 text-xs text-gray-500">
-                                  <Info className="w-3 h-3" />
-                                  <span>Location data will appear here when received</span>
-                                </div>
-                              )}
-                            </>
-                          )}
+                           </div>
                         </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-              
-              {activeTab === "insights" && (
-                <>
-                  {activeNavItem === "training" ? (
-                    // Training insights - use trainingInsights state
-                    <>
-                      {trainingInsights.summary ? (
-                        <>
-                          {trainingInsights.summary && (
-                            <div className="bg-[#2a2a2a] rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <FileText className="w-4 h-4 text-blue-400" />
-                                <h4 className="font-semibold text-sm">Summary</h4>
-                              </div>
-                              <p className="text-sm text-gray-300 leading-relaxed">{trainingInsights.summary}</p>
-                            </div>
-                          )}
-
-                          {trainingInsights.location && trainingInsights.location.length > 0 && (
-                            <div className="bg-[#2a2a2a] rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <MapPin className="w-4 h-4 text-green-400" />
-                                <h4 className="font-semibold text-sm">Location</h4>
-                              </div>
-                              <ul className="space-y-1">
-                                {trainingInsights.location.map((loc, idx) => (
-                                  <li key={idx} className="text-sm text-gray-300 flex items-start gap-2">
-                                    <span className="text-green-400 mt-1">•</span>
-                                    <span>{loc}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-
-                          {trainingInsights.incident && Object.keys(trainingInsights.incident).length > 0 && (
-                            <div className="bg-[#2a2a2a] rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <AlertCircle className="w-4 h-4 text-red-400" />
-                                <h4 className="font-semibold text-sm">Incident Details</h4>
-                              </div>
-                              <div className="space-y-2">
-                                {trainingInsights.incident.incident_type && (
-                                  <div>
-                                    <span className="text-xs text-gray-400">Type: </span>
-                                    <span className="text-sm text-white capitalize">{trainingInsights.incident.incident_type}</span>
-                                  </div>
-                                )}
-                                {trainingInsights.incident.severity && (
-                                  <div>
-                                    <span className="text-xs text-gray-400">Severity: </span>
-                                    <span className={`text-sm font-medium ${
-                                      trainingInsights.incident.severity === 'critical' ? 'text-red-400' :
-                                      trainingInsights.incident.severity === 'high' ? 'text-orange-400' :
-                                      trainingInsights.incident.severity === 'medium' ? 'text-yellow-400' : 'text-green-400'
-                                    }`}>{trainingInsights.incident.severity}</span>
-                                  </div>
-                                )}
-                                {trainingInsights.incident.description && (
-                                  <div>
-                                    <span className="text-xs text-gray-400">Description: </span>
-                                    <span className="text-sm text-gray-300">{trainingInsights.incident.description}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-
-                          {trainingInsights.additional_info && trainingInsights.additional_info.length > 0 && (
-                            <div className="bg-[#2a2a2a] rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <Info className="w-4 h-4 text-purple-400" />
-                                <h4 className="font-semibold text-sm">Additional Information</h4>
-                              </div>
-                              <ul className="space-y-1">
-                                {trainingInsights.additional_info.map((info, idx) => (
-                                  <li key={idx} className="text-sm text-gray-300 flex items-start gap-2">
-                                    <span className="text-purple-400 mt-1">•</span>
-                                    <span>{info}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="bg-[#2a2a2a] rounded-lg p-6 text-center">
-                          <Sparkles className="w-8 h-8 text-gray-500 mx-auto mb-2" />
-                          <p className="text-sm text-gray-400">Start a training session to see insights</p>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    // Live call insights - use insights state
-                    <>
-                      {renderInsightsContent()}
-
-                      {/* Analyze Button - Only show if we have data */}
-                      {insights.summary && (
-                        <Button
-                          onClick={handleAnalyze}
-                          variant="outline"
-                          className="w-full bg-transparent border-2 border-white/20 hover:bg-white/5 text-white font-semibold text-sm rounded-lg h-10 hover-orange-border"
-                        >
-                          Analyze
-                        </Button>
-                      )}
-                    </>
-                  )}
-                    </>
-                  )}
-
-                  {activeTab === "protocol" && (
-                    <div className="space-y-3">
-                      {renderProtocolContent()}
-                    </div>
-                  )}
-
-                  {activeTab === "location" && (
-                <div className="space-y-3">
-                  {/* Map View */}
-                  <div className="bg-[#2a2a2a] rounded-lg overflow-hidden border border-[#333333]" style={{ height: '350px' }}>
-                    <MapView
-                      latitude={mapLocation.latitude}
-                      longitude={mapLocation.longitude}
-                      zoom={13}
-                      onLocationUpdate={(lat, lng) => {
-                        setMapLocation(prev => ({
-                          ...prev,
-                          latitude: lat,
-                          longitude: lng
-                        }));
-                      }}
-                      onServicesUpdate={(services) => {
-                        const servicesMap: any = {};
-                        services.forEach(service => {
-                          servicesMap[service.type] = {
-                            name: service.name,
-                            distance: service.distance
-                          };
-                        });
-                        setNearestServices(servicesMap);
-                      }}
-                    />
+                     </div>
                   </div>
-
-                  {/* Location Insights Section */}
-                  <div className="bg-[#2a2a2a] rounded-lg p-3 border border-[#333333]">
-                    <div className="flex items-center gap-2 mb-3">
-                      <MapPin className="w-4 h-4 text-green-400" />
-                      <h4 className="font-semibold text-sm">Location Insights</h4>
-                    </div>
-                    <div className="space-y-3">
-                      <div>
-                        <p className="text-xs text-gray-400 mb-1">Address</p>
-                        <p className="text-xs text-white">{mapLocation.address}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-400 mb-1">Coordinates</p>
-                        <p className="text-xs text-gray-300">
-                          {mapLocation.latitude.toFixed(4)}° N, {Math.abs(mapLocation.longitude).toFixed(4)}° {mapLocation.longitude < 0 ? 'W' : 'E'}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-400 mb-1">District</p>
-                        <p className="text-xs text-gray-300">{mapLocation.district}</p>
-                      </div>
-                      
-                      {/* Surrounding Area Details */}
-                      <div className="pt-2 border-t border-[#333333]">
-                        <p className="text-xs text-gray-400 mb-2">Surrounding Area</p>
-                        <div className="space-y-1.5">
-                          {nearestServices.hospital && (
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2">
-                                <div className="w-1.5 h-1.5 bg-blue-400 rounded-full"></div>
-                                <p className="text-xs text-gray-300">{nearestServices.hospital.name}</p>
-                              </div>
-                              <span className="text-xs text-blue-400 font-medium">{nearestServices.hospital.distance.toFixed(2)} mi</span>
-                            </div>
-                          )}
-                          {nearestServices.fire && (
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2">
-                                <div className="w-1.5 h-1.5 bg-red-400 rounded-full"></div>
-                                <p className="text-xs text-gray-300">{nearestServices.fire.name}</p>
-                              </div>
-                              <span className="text-xs text-red-400 font-medium">{nearestServices.fire.distance.toFixed(2)} mi</span>
-                            </div>
-                          )}
-                          {nearestServices.police && (
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2">
-                                <div className="w-1.5 h-1.5 bg-green-400 rounded-full"></div>
-                                <p className="text-xs text-gray-300">{nearestServices.police.name}</p>
-                              </div>
-                              <span className="text-xs text-green-400 font-medium">{nearestServices.police.distance.toFixed(2)} mi</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Situational Data */}
-                      <div className="pt-2 border-t border-[#333333]">
-                        <p className="text-xs text-gray-400 mb-2">Situational Data</p>
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-300">Traffic Conditions</span>
-                            <span className="text-xs text-green-400">Light</span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-300">Weather</span>
-                            <span className="text-xs text-blue-400">Clear, 72°F</span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-300">Response Time Est.</span>
-                            <span className="text-xs text-orange-400">4-6 minutes</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    </div>
-                  </div>
-                  )}
-
-                  {activeTab === "media" && (
-                    <div className="space-y-3">
-                  <div className="bg-[#2a2a2a] rounded-lg p-2">
-                    <div className="flex items-center gap-1 mb-2">
-                      <Play className="w-4 h-4 text-purple-400" />
-                      <h4 className="font-semibold text-xs">Media Files</h4>
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2 p-1.5 bg-[#1a1a1a] rounded">
-                        <Volume2 className="w-3 h-3 text-blue-400" />
-                        <div className="flex-1">
-                          <p className="text-xs text-white">Call Recording</p>
-                          <p className="text-xs text-gray-400">Duration: 4:32</p>
-                        </div>
-                        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 px-2 py-1">
-                          <Play className="w-2.5 h-2.5" />
-                        </Button>
-                      </div>
-                      <div className="flex items-center gap-2 p-1.5 bg-[#1a1a1a] rounded">
-                        <FileText className="w-3 h-3 text-green-400" />
-                        <div className="flex-1">
-                          <p className="text-xs text-white">Transcript</p>
-                          <p className="text-xs text-gray-400">Auto-generated</p>
-                        </div>
-                        <Button size="sm" variant="outline" className="border-white/20 px-2 py-1 text-xs">
-                          View
-                        </Button>
-                      </div>
-                      <p className="text-xs text-gray-400">
-                        All media files are automatically processed and stored securely.
-                      </p>
-                      </div>
-                    </div>
-                  </div>
-                  )}
-
-                  {activeTab === "results" && activeNavItem === "training" && (
-                    <div className="space-y-3">
-                  {trainingConfidence !== null || trainingEvaluation ? (
-                    <>
-                      {/* Confidence Score Card */}
-                      {trainingConfidence !== null && (
-                        <div className="bg-gradient-to-br from-[#2a2a2a] to-[#1f1f1f] rounded-lg p-4 border border-[#333333]">
-                          <div className="flex items-center gap-2 mb-3">
-                            <GraduationCap className="w-5 h-5 text-[#fb923c]" />
-                            <h4 className="font-semibold text-base">Performance Score</h4>
-                          </div>
-                          <div className="flex items-center justify-center py-6">
-                            <div className="relative">
-                              <div className="text-6xl font-bold bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] bg-clip-text text-transparent">
-                                {trainingConfidence}%
-                              </div>
-                              <div className={`text-center mt-2 text-sm font-medium ${
-                                trainingConfidence >= 85 ? 'text-emerald-400' :
-                                trainingConfidence >= 70 ? 'text-green-400' :
-                                trainingConfidence >= 60 ? 'text-yellow-400' : 'text-red-400'
-                              }`}>
-                                {trainingConfidence >= 85 ? '🌟 Excellent Performance' :
-                                 trainingConfidence >= 70 ? '✅ Good Performance' :
-                                 trainingConfidence >= 60 ? '⚠️ Satisfactory' : '❌ Needs Improvement'}
-                              </div>
-                            </div>
-                          </div>
-                          {/* Progress Bar */}
-                          <div className="w-full bg-[#1a1a1a] rounded-full h-3 overflow-hidden">
-                            <div 
-                              className={`h-full rounded-full transition-all duration-500 ${
-                                trainingConfidence >= 85 ? 'bg-gradient-to-r from-emerald-500 to-green-500' :
-                                trainingConfidence >= 70 ? 'bg-gradient-to-r from-green-500 to-lime-500' :
-                                trainingConfidence >= 60 ? 'bg-gradient-to-r from-yellow-500 to-orange-500' : 
-                                'bg-gradient-to-r from-red-500 to-orange-500'
-                              }`}
-                              style={{ width: `${trainingConfidence}%` }}
-                            />
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Detailed Evaluation */}
-                      {trainingEvaluation && (
-                        <div className="bg-[#2a2a2a] rounded-lg p-4 border border-[#333333]">
-                          <div className="flex items-center gap-2 mb-3">
-                            <Sparkles className="w-5 h-5 text-blue-400" />
-                            <h4 className="font-semibold text-base">Detailed Evaluation</h4>
-                          </div>
-                          <div className="prose prose-invert prose-sm max-w-none text-sm text-gray-300 leading-relaxed">
-                            <ReactMarkdown
-                              components={{
-                                h1: ({node, ...props}) => <h1 className="text-xl font-bold text-white mt-4 mb-2" {...props} />,
-                                h2: ({node, ...props}) => <h2 className="text-lg font-semibold text-white mt-3 mb-2" {...props} />,
-                                h3: ({node, ...props}) => <h3 className="text-base font-semibold text-white mt-2 mb-1" {...props} />,
-                                p: ({node, ...props}) => <p className="mb-3 text-gray-300" {...props} />,
-                                ul: ({node, ...props}) => <ul className="list-disc list-inside mb-3 space-y-1 text-gray-300" {...props} />,
-                                ol: ({node, ...props}) => <ol className="list-decimal list-inside mb-3 space-y-1 text-gray-300" {...props} />,
-                                li: ({node, ...props}) => <li className="text-gray-300" {...props} />,
-                                strong: ({node, ...props}) => <strong className="font-semibold text-white" {...props} />,
-                                em: ({node, ...props}) => <em className="italic text-gray-200" {...props} />,
-                                code: ({node, ...props}) => <code className="bg-[#1a1a1a] px-1.5 py-0.5 rounded text-[#fb923c] text-xs" {...props} />,
-                                blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-[#fb923c] pl-4 italic text-gray-400 my-3" {...props} />,
-                                a: ({node, ...props}) => <a className="text-blue-400 hover:text-blue-300 underline" {...props} />,
-                              }}
-                            >
-                              {trainingEvaluation}
-                            </ReactMarkdown>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Key Metrics */}
-                      {trainingConfidence !== null && (
-                        <div className="bg-[#2a2a2a] rounded-lg p-4 border border-[#333333]">
-                          <div className="flex items-center gap-2 mb-3">
-                            <BarChart3 className="w-5 h-5 text-purple-400" />
-                            <h4 className="font-semibold text-base">Key Metrics</h4>
-                          </div>
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm text-gray-400">Information Gathering</span>
-                              <div className="flex items-center gap-2">
-                                <div className="w-24 bg-[#1a1a1a] rounded-full h-2">
-                                  <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${Math.min(trainingConfidence + 5, 100)}%` }} />
-                                </div>
-                                <span className="text-xs text-white w-10 text-right">{Math.min(trainingConfidence + 5, 100)}%</span>
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm text-gray-400">Communication Clarity</span>
-                              <div className="flex items-center gap-2">
-                                <div className="w-24 bg-[#1a1a1a] rounded-full h-2">
-                                  <div className="bg-green-500 h-2 rounded-full" style={{ width: `${trainingConfidence}%` }} />
-                                </div>
-                                <span className="text-xs text-white w-10 text-right">{trainingConfidence}%</span>
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm text-gray-400">Calmness & Composure</span>
-                              <div className="flex items-center gap-2">
-                                <div className="w-24 bg-[#1a1a1a] rounded-full h-2">
-                                  <div className="bg-purple-500 h-2 rounded-full" style={{ width: `${Math.max(trainingConfidence - 5, 0)}%` }} />
-                                </div>
-                                <span className="text-xs text-white w-10 text-right">{Math.max(trainingConfidence - 5, 0)}%</span>
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm text-gray-400">Protocol Adherence</span>
-                              <div className="flex items-center gap-2">
-                                <div className="w-24 bg-[#1a1a1a] rounded-full h-2">
-                                  <div className="bg-orange-500 h-2 rounded-full" style={{ width: `${trainingConfidence}%` }} />
-                                </div>
-                                <span className="text-xs text-white w-10 text-right">{trainingConfidence}%</span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Action Buttons */}
-                      <div className="flex gap-2">
-                        <Button
-                          onClick={() => {
-                            // Copy evaluation to clipboard
-                            if (trainingEvaluation) {
-                              navigator.clipboard.writeText(trainingEvaluation);
-                              toast({
-                                title: "Copied to Clipboard",
-                                description: "Evaluation copied successfully",
-                              });
-                            }
-                          }}
-                          variant="outline"
-                          className="flex-1 bg-transparent border-[#333333] hover:bg-[#2a2a2a] text-sm"
-                        >
-                          <Copy className="w-4 h-4 mr-2" />
-                          Copy Results
-                        </Button>
-                        <Button
-                          onClick={() => {
-                            // Export as PDF or download
-                            toast({
-                              title: "Export Feature",
-                              description: "Export functionality coming soon",
-                            });
-                          }}
-                          variant="outline"
-                          className="flex-1 bg-transparent border-[#333333] hover:bg-[#2a2a2a] text-sm"
-                        >
-                          <FileText className="w-4 h-4 mr-2" />
-                          Export PDF
-                        </Button>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="bg-[#2a2a2a] rounded-lg p-8 text-center border border-[#333333]">
-                      <GraduationCap className="w-12 h-12 text-gray-500 mx-auto mb-3" />
-                      <h4 className="text-base font-semibold text-white mb-2">No Results Yet</h4>
-                      <p className="text-sm text-gray-400 mb-4">
-                        Complete a training session to see your performance evaluation and detailed results.
-                      </p>
-                      {activeTrainingSession && (
-                        <Button
-                          onClick={handleEndTraining}
-                          className="bg-[#fb923c] hover:bg-[#ea7b1a] text-white"
-                        >
-                          End Session & Get Results
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex-1 flex flex-col min-h-0">
-              {/* Top Panel */}
-              <div style={{ height: `${splitHeight}%` }} className="flex flex-col border-b border-[#333333] min-h-0">
-                <div className="flex items-center justify-between px-4 py-2 border-b border-[#333333] bg-[#1a1a1a] flex-shrink-0">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className={`w-4 h-4 ${topPanelTab === 'insights' ? 'text-blue-400' : 'text-purple-400'}`} />
-                    <h4 className="font-semibold text-sm">{topPanelTab === 'insights' ? 'Insights' : 'Protocol'}</h4>
-                  </div>
-                  <button
-                    onClick={swapPanels}
-                    className="p-1 hover:bg-[#2a2a2a] rounded transition-colors"
-                    title="Swap panels"
-                  >
-                    <ChevronDown className="w-4 h-4 text-gray-400 hover:text-white" />
-                  </button>
-                </div>
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3 min-h-0">
-                  {topPanelTab === 'insights' ? (
-                    activeNavItem === "training" ? (
-                      // Training insights in split view
-                      trainingInsights.summary ? (
-                        <>
-                          {trainingInsights.summary && (
-                            <div className="bg-[#2a2a2a] rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <FileText className="w-4 h-4 text-blue-400" />
-                                <h4 className="font-semibold text-sm">Summary</h4>
-                              </div>
-                              <p className="text-sm text-gray-300 leading-relaxed">{trainingInsights.summary}</p>
-                            </div>
-                          )}
-                          {trainingInsights.location && trainingInsights.location.length > 0 && (
-                            <div className="bg-[#2a2a2a] rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <MapPin className="w-4 h-4 text-green-400" />
-                                <h4 className="font-semibold text-sm">Location</h4>
-                              </div>
-                              <ul className="space-y-1">
-                                {trainingInsights.location.map((loc, idx) => (
-                                  <li key={idx} className="text-sm text-gray-300">{loc}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="text-center text-gray-400 text-sm">No insights yet</div>
-                      )
-                    ) : (
-                      renderInsightsContent()
-                    )
-                  ) : (
-                    renderProtocolContent()
-                  )}
-                </div>
-              </div>
-
-              {/* Resize Handle */}
-              <div
-                className="h-2 bg-[#2a2a2a] hover:bg-orange-500 cursor-row-resize transition-colors flex items-center justify-center group relative flex-shrink-0"
-                onMouseDown={() => setIsResizingSplit(true)}
-              >
-                <div className="w-12 h-1 bg-[#555555] group-hover:bg-orange-500 rounded-full transition-colors"></div>
-              </div>
-
-              {/* Bottom Panel */}
-              <div style={{ height: `${100 - splitHeight}%` }} className="flex flex-col min-h-0">
-                <div className="flex items-center justify-between px-4 py-2 border-b border-[#333333] bg-[#1a1a1a] flex-shrink-0">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className={`w-4 h-4 ${bottomPanelTab === 'insights' ? 'text-blue-400' : 'text-purple-400'}`} />
-                    <h4 className="font-semibold text-sm">{bottomPanelTab === 'insights' ? 'Insights' : 'Protocol'}</h4>
-                  </div>
-                  <button
-                    onClick={swapPanels}
-                    className="p-1 hover:bg-[#2a2a2a] rounded transition-colors"
-                    title="Swap panels"
-                  >
-                    <ChevronDown className="w-4 h-4 text-gray-400 hover:text-white rotate-180" />
-                  </button>
-                </div>
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3 min-h-0">
-                  {bottomPanelTab === 'insights' ? (
-                    activeNavItem === "training" ? (
-                      // Training insights in split view
-                      trainingInsights.summary ? (
-                        <>
-                          {trainingInsights.incident && Object.keys(trainingInsights.incident).length > 0 && (
-                            <div className="bg-[#2a2a2a] rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <AlertCircle className="w-4 h-4 text-red-400" />
-                                <h4 className="font-semibold text-sm">Incident Details</h4>
-                              </div>
-                              <div className="space-y-2">
-                                {trainingInsights.incident.incident_type && (
-                                  <div>
-                                    <span className="text-xs text-gray-400">Type: </span>
-                                    <span className="text-sm text-white capitalize">{trainingInsights.incident.incident_type}</span>
-                                  </div>
-                                )}
-                                {trainingInsights.incident.severity && (
-                                  <div>
-                                    <span className="text-xs text-gray-400">Severity: </span>
-                                    <span className="text-sm text-white capitalize">{trainingInsights.incident.severity}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          {trainingInsights.additional_info && trainingInsights.additional_info.length > 0 && (
-                            <div className="bg-[#2a2a2a] rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <Info className="w-4 h-4 text-purple-400" />
-                                <h4 className="font-semibold text-sm">Additional Information</h4>
-                              </div>
-                              <ul className="space-y-1">
-                                {trainingInsights.additional_info.map((info, idx) => (
-                                  <li key={idx} className="text-sm text-gray-300">{info}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="text-center text-gray-400 text-sm">No insights yet</div>
-                      )
-                    ) : (
-                      renderInsightsContent()
-                    )
-                  ) : (
-                    renderProtocolContent()
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-        </div >
-        )}
-
-        {/* Dispatch Control Panel - Right Sidebar */}
-        {activeNavItem === "dispatch" && (
-          <div id="dispatch-panel" style={{ width: `${rightWidth}px` }} className="border-l border-[#333333] bg-[#1f1f1f] flex flex-col flex-shrink-0">
-            {/* Header */}
-            <div className="border-b border-[#333333] px-4 py-3">
-              <h3 className="text-white font-semibold text-base">Emergency Dispatch</h3>
-              <p className="text-gray-400 text-xs mt-1">Find nearest emergency services</p>
+               ))}
             </div>
 
-            {/* Content */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
-              {/* Emergency Type Selector */}
-              <div>
-                <label className="text-sm font-medium text-gray-300 mb-2 block">Emergency Type</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() => setDispatchEmergencyType('hospital')}
-                    className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                      dispatchEmergencyType === 'hospital'
-                        ? 'border-[#3b82f6] bg-[#3b82f6]/10 text-[#3b82f6]'
-                        : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#3b82f6]/50 hover:text-[#3b82f6]'
-                    }`}
-                  >
-                    <Ambulance className="w-6 h-6 mb-1" />
-                    <span className="text-xs font-medium">Hospital</span>
-                  </button>
-                  <button
-                    onClick={() => setDispatchEmergencyType('police')}
-                    className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                      dispatchEmergencyType === 'police'
-                        ? 'border-[#22c55e] bg-[#22c55e]/10 text-[#22c55e]'
-                        : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#22c55e]/50 hover:text-[#22c55e]'
-                    }`}
-                  >
-                    <Shield className="w-6 h-6 mb-1" />
-                    <span className="text-xs font-medium">Police</span>
-                  </button>
-                  <button
-                    onClick={() => setDispatchEmergencyType('fire')}
-                    className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                      dispatchEmergencyType === 'fire'
-                        ? 'border-[#ef4444] bg-[#ef4444]/10 text-[#ef4444]'
-                        : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#ef4444]/50 hover:text-[#ef4444]'
-                    }`}
-                  >
-                    <Flame className="w-6 h-6 mb-1" />
-                    <span className="text-xs font-medium">Fire</span>
-                  </button>
-                </div>
-              </div>
+            <div className="p-4 border-t border-[#2a2a2a]">
+               {/* Button removed as requested */}
+            </div>
+         </aside>
 
-              {/* Search Button */}
-              <Button
-                onClick={async () => {
-                  if (dispatchMapRef.current) {
-                    setIsSearchingStations(true);
-                    try {
-                      await dispatchMapRef.current.searchNearestStations();
-                    } finally {
-                      setIsSearchingStations(false);
-                    }
-                  }
-                }}
-                disabled={isSearchingStations}
-                className="w-full bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] hover:from-[#ea7b1a] hover:to-[#fb923c] text-white font-semibold py-3 rounded-lg transition-all shadow-lg"
-              >
-                {isSearchingStations ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Searching...
-                  </>
-                ) : (
-                  <>
-                    <Search className="w-4 h-4 mr-2" />
-                    Find Nearest Stations
-                  </>
-                )}
-              </Button>
+         {/* Center Panel */}
+         <main className="flex-1 flex flex-col bg-[#0a0a0a] relative min-w-0">
+            <div className="h-14 border-b border-[#2a2a2a] flex items-center justify-between px-6 shrink-0">
+               <div className="flex items-center gap-3">
+                  <div>
+                     <h2 className="text-base font-semibold text-white">{calls[selectedIncident]?.phone || "Select a Call"}</h2>
+                     <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                        <span>{calls[selectedIncident]?.isLive ? "Incoming Call" : "Past Call"}</span>
+                        <span className="w-1 h-1 rounded-full bg-gray-600"></span>
+                        <div className="flex items-center gap-1 text-gray-400 bg-[#1a1a1a] px-1.5 py-0.5 rounded border border-[#333]">
+                           Uncategorized <ChevronDown className="w-3 h-3" />
+                        </div>
+                     </div>
+                  </div>
+               </div>
+               <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" className="bg-[#1a1a1a] border-[#333] text-gray-300 hover:bg-[#252525] hover:text-white h-8 text-xs px-3">
+                     <Share2 className="w-3.5 h-3.5 mr-1.5" /> Share
+                  </Button>
+                  <Button variant="outline" size="sm" className="bg-[#1a1a1a] border-[#333] text-gray-300 hover:bg-[#252525] hover:text-white h-8 text-xs px-3">
+                     Manage <ChevronDown className="w-3.5 h-3.5 ml-1.5" />
+                  </Button>
+               </div>
+            </div>
 
-              {/* Results List */}
-              {dispatchStations.length > 0 && (
-                <div>
-                  <h4 className="text-sm font-medium text-gray-300 mb-2">
-                    Top 5 Nearest {dispatchEmergencyType === 'hospital' ? 'Hospitals' : dispatchEmergencyType === 'police' ? 'Police Stations' : 'Fire Stations'}
-                  </h4>
-                  <div className="space-y-2">
-                    {dispatchStations.map((station, index) => (
-                      <div key={index}>
-                        <button
-                          onClick={() => {
-                            setSelectedStationIndex(selectedStationIndex === index ? null : index);
-                            if (dispatchMapRef.current) {
-                              dispatchMapRef.current.flyToStation(station);
-                            }
-                          }}
-                          className={`w-full p-3 rounded-lg border-2 transition-all text-left hover:shadow-lg ${
-                            selectedStationIndex === index
-                              ? dispatchEmergencyType === 'hospital'
-                                ? 'border-[#3b82f6] bg-[#3b82f6]/10'
-                                : dispatchEmergencyType === 'police'
-                                ? 'border-[#22c55e] bg-[#22c55e]/10'
-                                : 'border-[#ef4444] bg-[#ef4444]/10'
-                              : dispatchEmergencyType === 'hospital'
-                                ? 'border-[#3b82f6]/30 bg-[#3b82f6]/5 hover:border-[#3b82f6] hover:bg-[#3b82f6]/10'
-                                : dispatchEmergencyType === 'police'
-                                ? 'border-[#22c55e]/30 bg-[#22c55e]/5 hover:border-[#22c55e] hover:bg-[#22c55e]/10'
-                                : 'border-[#ef4444]/30 bg-[#ef4444]/5 hover:border-[#ef4444] hover:bg-[#ef4444]/10'
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-2 mb-2">
-                            <div className="flex items-center gap-2">
-                              <span className={`flex items-center justify-center w-6 h-6 rounded-full font-bold text-xs ${
-                                dispatchEmergencyType === 'hospital'
-                                  ? 'bg-[#3b82f6] text-white'
-                                  : dispatchEmergencyType === 'police'
-                                  ? 'bg-[#22c55e] text-white'
-                                  : 'bg-[#ef4444] text-white'
-                              }`}>
-                                {index + 1}
-                              </span>
-                              {index === 0 && (
-                                <span className="px-2 py-0.5 bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] text-white text-xs font-bold rounded">
-                                  CLOSEST
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-right">
-                              <div className={`text-sm font-semibold ${
-                                dispatchEmergencyType === 'hospital'
-                                  ? 'text-[#3b82f6]'
-                                  : dispatchEmergencyType === 'police'
-                                  ? 'text-[#22c55e]'
-                                  : 'text-[#ef4444]'
-                              }`}>
-                                {station.distance.toFixed(1)} km
-                              </div>
-                              <div className="text-xs text-[#fb923c] font-medium">
-                                {station.duration} drive
-                              </div>
-                            </div>
-                          </div>
-                          <h5 className="text-sm font-semibold text-white mb-1 line-clamp-1">
-                            {station.name}
-                          </h5>
-                          <p className="text-xs text-gray-400 line-clamp-2">
-                            {station.address}
-                          </p>
+            <div className="px-6 py-2.5 border-b border-[#2a2a2a] bg-[#0f0f0f] shrink-0">
+               <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                     <div className="w-7 h-7 rounded-full bg-[#1a1a1a] flex items-center justify-center border border-[#333]">
+                        <BarChart3 className="w-3.5 h-3.5 text-gray-400" />
+                     </div>
+                     <div>
+                        <div className="text-[9px] font-bold text-gray-500 tracking-wider">DEVICE INFO</div>
+                        <div className="text-[11px] text-gray-400">iOS 16.1.1 (iPhone)</div>
+                     </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                     <Select value={detectedLanguage.toLowerCase()} onValueChange={(value) => {
+                        const langMap: Record<string, string> = {
+                          // Major world languages
+                          'english': 'English',
+                          'spanish': 'Spanish',
+                          'french': 'French',
+                          'german': 'German',
+                          'italian': 'Italian',
+                          'portuguese': 'Portuguese',
+                          'russian': 'Russian',
+                          'japanese': 'Japanese',
+                          'korean': 'Korean',
+                          'chinese': 'Chinese',
+                          'arabic': 'Arabic',
                           
-                          {/* Emergency Contact Actions - Expand inside card when selected */}
-                          {selectedStationIndex === index && emergencyContacts[dispatchEmergencyType] && (
-                            <div className="mt-4 pt-4 border-t border-[#fb923c]/30">
-                              <div className="flex items-center justify-between mb-3">
-                                <div className="flex items-center gap-2">
-                                  <Phone className="w-4 h-4 text-[#fb923c]" />
-                                  <span className="text-xs font-semibold text-gray-400">Emergency Contact:</span>
-                                </div>
-                                <span className="text-sm font-bold text-[#fb923c]">{emergencyContacts[dispatchEmergencyType]}</span>
+                          // 11 Major Indian Languages
+                          'hindi': 'Hindi',
+                          'bengali': 'Bengali',
+                          'telugu': 'Telugu',
+                          'marathi': 'Marathi',
+                          'tamil': 'Tamil',
+                          'urdu': 'Urdu',
+                          'gujarati': 'Gujarati',
+                          'kannada': 'Kannada',
+                          'odia': 'Odia',
+                          'malayalam': 'Malayalam',
+                          'punjabi': 'Punjabi'
+                        };
+                        setDetectedLanguage(langMap[value] || 'English');
+                        console.log('🌐 Dispatcher language changed to:', langMap[value]);
+                     }}>
+                        <SelectTrigger className="w-[140px] h-8 bg-[#1a1a1a] border-[#333] text-xs text-gray-300">
+                           <SelectValue placeholder="Set Language" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-[#1a1a1a] border-[#333] text-gray-300 max-h-[400px] overflow-y-auto">
+                           {/* Common Languages */}
+                           <div className="px-2 py-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Common</div>
+                           <SelectItem value="english">English</SelectItem>
+                           <SelectItem value="spanish">Spanish</SelectItem>
+                           <SelectItem value="french">French</SelectItem>
+                           <SelectItem value="chinese">Chinese</SelectItem>
+                           <SelectItem value="arabic">Arabic</SelectItem>
+                           
+                           {/* Indian Languages - 11 Major */}
+                           <div className="px-2 py-1.5 text-xs font-semibold text-[#fb923c] uppercase tracking-wider mt-2">🇮🇳 Indian Languages</div>
+                           <SelectItem value="hindi">Hindi (हिन्दी)</SelectItem>
+                           <SelectItem value="bengali">Bengali (বাংলা)</SelectItem>
+                           <SelectItem value="telugu">Telugu (తెలుగు)</SelectItem>
+                           <SelectItem value="marathi">Marathi (मराठी)</SelectItem>
+                           <SelectItem value="tamil">Tamil (தமிழ்)</SelectItem>
+                           <SelectItem value="urdu">Urdu (اردو)</SelectItem>
+                           <SelectItem value="gujarati">Gujarati (ગુજરાતી)</SelectItem>
+                           <SelectItem value="kannada">Kannada (ಕನ್ನಡ)</SelectItem>
+                           <SelectItem value="odia">Odia (ଓଡ଼ିଆ)</SelectItem>
+                           <SelectItem value="malayalam">Malayalam (മലയാളം)</SelectItem>
+                           <SelectItem value="punjabi">Punjabi (ਪੰਜਾਬੀ)</SelectItem>
+                           
+                           {/* Other Languages */}
+                           <div className="px-2 py-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider mt-2">Other</div>
+                           <SelectItem value="german">German</SelectItem>
+                           <SelectItem value="italian">Italian</SelectItem>
+                           <SelectItem value="portuguese">Portuguese</SelectItem>
+                           <SelectItem value="russian">Russian</SelectItem>
+                           <SelectItem value="japanese">Japanese</SelectItem>
+                           <SelectItem value="korean">Korean</SelectItem>
+                        </SelectContent>
+                     </Select>
+                     <Button size="sm" className="h-8 bg-[#5B5FED] hover:bg-[#4a4ec0] text-white">Media <ChevronDown className="w-3 h-3 ml-1" /></Button>
+                  </div>
+               </div>
+               <div className="mt-3 flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
+                     <div className={`w-2 h-2 rounded-full ${calls[selectedIncident]?.isLive ? 'bg-red-500 animate-pulse' : 'bg-gray-500'}`}></div>
+                     <span className="text-xs font-bold text-white">{calls[selectedIncident]?.isLive ? 'LIVE' : 'RECORDED'}</span>
+                  </div>
+                  <div className="flex-1 h-1 bg-[#1a1a1a] rounded-full overflow-hidden">
+                     <div className={`h-full bg-[#5B5FED] transition-all duration-300 ${
+                        calls[selectedIncident]?.isLive ? 'w-full' : 'w-1/3'
+                     }`}></div>
+                  </div>
+                  <Volume2 className="w-4 h-4 text-gray-400" />
+               </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+               <div className="text-center text-xs text-gray-500 mb-8">
+                  {calls[selectedIncident]?.date || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} | {calls[selectedIncident]?.time || new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}
+               </div>
+               <div className="flex justify-center mb-6">
+                  <div className="flex items-center gap-2 text-xs text-gray-500">
+                     <Phone className="w-3 h-3" /> Call started
+                  </div>
+               </div>
+
+               {conversation.map((msg, idx) => (
+                  <div key={idx} className={`flex ${msg.sender === 'Dispatch' ? 'justify-end' : 'justify-start'}`}>
+                     <div className="max-w-[80%]">
+                        <div className={`text-[10px] text-gray-500 mb-1 flex items-center gap-2 ${
+                           msg.sender === 'Dispatch' ? 'justify-end' : 'justify-start'
+                        }`}>
+                           <span>{msg.sender} | {msg.time}</span>
+                           {msg.isTranslated && (
+                              <span className="inline-flex items-center gap-1 bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded text-[9px] font-medium">
+                                 <span>🌐</span> Translated
+                              </span>
+                           )}
+                        </div>
+                        <div className={`rounded-2xl text-sm ${
+                           msg.sender === 'Dispatch' 
+                              ? 'bg-[#1a1a1a] border border-[#333] rounded-tr-sm' 
+                              : 'bg-[#1a1a1a] border border-[#333] rounded-tl-sm'
+                        }`}>
+                           {msg.isTranslated && msg.originalMessage ? (
+                              <>
+                                 {/* Original message */}
+                                 <div className="p-3 border-b border-[#333]/50">
+                                    <div className="text-[9px] text-gray-500 mb-1 uppercase tracking-wide">Original</div>
+                                    <div className="text-gray-400 italic">{msg.originalMessage}</div>
+                                 </div>
+                                 {/* Translated message */}
+                                 <div className="p-3">
+                                    <div className="text-[9px] text-blue-400 mb-1 uppercase tracking-wide">Translated</div>
+                                    <div className="text-white font-medium">{msg.message}</div>
+                                 </div>
+                              </>
+                           ) : (
+                              <div className={`p-3 ${
+                                 msg.sender === 'Dispatch' ? 'text-gray-300' : 'text-white'
+                              }`}>
+                                 {msg.message}
                               </div>
-                              <div className="flex gap-2">
-                                <Button
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    console.log('📞 Initiating emergency call to:', emergencyContacts[dispatchEmergencyType]);
-                                    console.log('📊 Using insights data:', insights);
-                                    console.log('📍 Location address:', mapLocation.address);
-                                    
-                                    try {
-                                      // Determine which insights to use (training or call insights)
-                                      const insightsToUse = activeNavItem === "training" ? trainingInsights : insights;
-                                      console.log('🔍 Selected insights for call:', insightsToUse);
-                                      
-                                      // Make emergency call via backend API
-                                      const response = await fetch('http://localhost:8000/call/emergency', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({
-                                          to_number: emergencyContacts[dispatchEmergencyType],
-                                          emergency_type: dispatchEmergencyType,
-                                          location_address: mapLocation.address,
-                                          station_name: station.name,
-                                          insights_data: insightsToUse
-                                        })
-                                      });
-                                      
-                                      const result = await response.json();
-                                      console.log('📞 Call API response:', result);
-                                      
-                                      if (result.status === 'success') {
-                                        toast({
-                                          title: "Emergency Call Initiated",
-                                          description: `Call placed to ${station.name} - SID: ${result.call_sid}`,
-                                        });
-                                        console.log('✅ Emergency call successful:', result.call_sid);
-                                      } else {
-                                        toast({
-                                          title: "Call Failed",
-                                          description: result.message || "Failed to initiate call",
-                                          variant: "destructive"
-                                        });
-                                        console.error('❌ Call failed:', result.message);
-                                      }
-                                    } catch (error) {
-                                      console.error('❌ Call error:', error);
-                                      toast({
-                                        title: "Call Error",
-                                        description: "Failed to initiate emergency call",
-                                        variant: "destructive"
-                                      });
-                                    }
-                                  }}
-                                  className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold h-9 text-sm"
-                                >
-                                  <Phone className="w-4 h-4 mr-2" />
-                                  Call
-                                </Button>
-                                <Button
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    console.log('📱 Sending emergency SMS to:', emergencyContacts[dispatchEmergencyType]);
-                                    console.log('📊 Using insights data:', insights);
-                                    console.log('📍 Location address:', mapLocation.address);
-                                    
-                                    try {
-                                      // Determine which insights to use (training or call insights)
-                                      const insightsToUse = activeNavItem === "training" ? trainingInsights : insights;
-                                      console.log('🔍 Selected insights for SMS:', insightsToUse);
-                                      
-                                      // Send emergency SMS with insights data
-                                      const response = await fetch('http://localhost:8000/sms/emergency', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({
-                                          to_number: emergencyContacts[dispatchEmergencyType],
-                                          emergency_type: dispatchEmergencyType,
-                                          location_address: mapLocation.address,
-                                          station_name: station.name,
-                                          insights_data: insightsToUse
-                                        })
-                                      });
-                                      
-                                      const result = await response.json();
-                                      console.log('📱 SMS API response:', result);
-                                      
-                                      if (result.status === 'success') {
-                                        toast({
-                                          title: "SMS Sent",
-                                          description: `Emergency alert sent to ${station.name}`,
-                                        });
-                                        console.log('✅ Emergency SMS successful:', result.message_sid);
-                                      } else {
-                                        toast({
-                                          title: "SMS Failed",
-                                          description: result.message || "Failed to send SMS",
-                                          variant: "destructive"
-                                        });
-                                        console.error('❌ SMS failed:', result.message);
-                                      }
-                                    } catch (error) {
-                                      console.error('❌ SMS error:', error);
-                                      toast({
-                                        title: "SMS Error",
-                                        description: "Failed to send emergency SMS",
-                                        variant: "destructive"
-                                      });
-                                    }
-                                  }}
-                                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold h-9 text-sm"
-                                >
-                                  <MessageSquare className="w-4 h-4 mr-2" />
-                                  Send SMS
-                                </Button>
+                           )}
+                        </div>
+                     </div>
+                  </div>
+               ))}
+               
+               <div ref={conversationEndRef} />
+            </div>
+
+            {/* Suggested Question - Shows one at a time above Talk button */}
+            {calls[selectedIncident]?.isLive && protocolQuestions.filter(q => !q.isAsked).length > 0 && (
+               <div className="px-6 py-3 border-t border-[#2a2a2a]/50 bg-[#0a0a0a]">
+                  <div className="bg-gradient-to-r from-[#5B5FED]/10 to-[#5B5FED]/5 border border-[#5B5FED]/30 rounded-lg p-3">
+                     <div className="flex items-start gap-3">
+                        {/* Animated Loader */}
+                        <div className="flex flex-col items-center gap-1 pt-0.5">
+                           <div className="relative w-5 h-5">
+                              <div className="absolute inset-0 border-2 border-[#5B5FED]/20 rounded-full"></div>
+                              <div className="absolute inset-0 border-2 border-[#5B5FED] rounded-full border-t-transparent animate-spin"></div>
+                           </div>
+                           <span className="text-[8px] text-[#5B5FED] font-medium uppercase tracking-wide">Waiting</span>
+                        </div>
+
+                        {/* Question Content */}
+                        <div className="flex-1">
+                           <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[9px] text-gray-400 uppercase tracking-wide">Suggested Question</span>
+                              {protocolQuestions.filter(q => !q.isAsked)[0]?.isPredefined ? (
+                                 <span className="text-[8px] bg-orange-500/20 text-orange-400 px-1.5 py-0.5 rounded uppercase font-medium">Essential</span>
+                              ) : (
+                                 <span className="text-[8px] bg-[#5B5FED]/20 text-[#5B5FED] px-1.5 py-0.5 rounded uppercase font-medium">AI</span>
+                              )}
+                           </div>
+                           <p className="text-sm text-white font-medium leading-relaxed">
+                              {protocolQuestions.filter(q => !q.isAsked)[0]?.question}
+                           </p>
+                           <div className="flex items-center gap-2 mt-2">
+                              <span className="text-[10px] text-gray-500 capitalize">
+                                 {protocolQuestions.filter(q => !q.isAsked)[0]?.category}
+                              </span>
+                              <span className="text-[10px] text-gray-600">•</span>
+                              <button 
+                                 onClick={() => setActiveTab('guidance')}
+                                 className="text-[10px] text-[#5B5FED] hover:text-[#4a4ec0] transition-colors"
+                              >
+                                 {protocolQuestions.filter(q => !q.isAsked).length - 1} more questions →
+                              </button>
+                           </div>
+                        </div>
+                     </div>
+                  </div>
+               </div>
+            )}
+
+            {/* Microphone Button for Live Calls */}
+            {calls[selectedIncident]?.isLive && (
+               <div className="px-6 py-3 border-t border-[#2a2a2a] bg-[#0a0a0a] shrink-0">
+                  <Button
+                     onClick={toggleMicrophone}
+                     disabled={!isLiveCall}
+                     variant="outline"
+                     size="sm"
+                     className={`h-8 text-xs font-medium transition-all ${
+                        isMicActive
+                           ? 'bg-red-500/10 border-red-500 text-red-400 hover:bg-red-500/20'
+                           : 'bg-[#1a1a1a] border-[#333] text-gray-300 hover:bg-[#252525] hover:text-white'
+                     }`}
+                  >
+                     {isMicActive ? (
+                        <>
+                           <MicOff className="w-3 h-3 mr-1.5" />
+                           Stop Talking
+                        </>
+                     ) : (
+                        <>
+                           <Mic className="w-3 h-3 mr-1.5" />
+                           Talk
+                        </>
+                     )}
+                  </Button>
+               </div>
+            )}
+         </main>
+
+         {/* Right Panel */}
+         <aside 
+            id="right-panel"
+            style={{ width: rightWidth }}
+            className="border-l border-[#2a2a2a] flex flex-col bg-[#0a0a0a] relative"
+         >
+            {/* Resize Handle */}
+            <div
+               className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[#5B5FED]/50 z-50 transition-colors"
+               onMouseDown={(e) => {
+                  e.preventDefault();
+                  setIsResizingRight(true);
+               }}
+            />
+            <div 
+               id="location-section"
+               className={`border-b border-[#2a2a2a] flex flex-col min-h-[300px] ${
+                  calls[selectedIncident]?.phone && locationData[calls[selectedIncident].phone]
+                     ? 'p-0'
+                     : 'p-6 items-center justify-center text-center'
+               }`}
+            >
+               {calls[selectedIncident]?.phone && locationData[calls[selectedIncident].phone] ? (
+                  // Show map when location data is available
+                  <div className="h-full w-full bg-[#1a1a1a] overflow-hidden relative flex-1">
+                     <MapView 
+                        latitude={locationData[calls[selectedIncident].phone].latitude} 
+                        longitude={locationData[calls[selectedIncident].phone].longitude} 
+                     />
+                  </div>
+               ) : (
+                  // Show request button when no location data
+                  <>
+                     <div className="text-sm text-gray-400 mb-4">Send a link via SMS to receive live GPS location</div>
+                     <Button 
+                        onClick={() => {
+                           if (calls[selectedIncident]?.phone) {
+                              handleSendTrackingLink(calls[selectedIncident].phone);
+                           } else {
+                              toast({
+                                 title: "Error",
+                                 description: "No phone number available for this call",
+                                 variant: "destructive"
+                              });
+                           }
+                        }}
+                        className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white px-6 h-10 rounded-md font-medium"
+                     >
+                        Request Live Location
+                     </Button>
+                  </>
+               )}
+            </div>
+
+            {/* Tabs Section with Resize Handle */}
+            <div 
+               style={{ height: `${tabsHeight}px` }}
+               className="flex flex-col min-h-0 overflow-hidden relative border-t-2 border-[#2a2a2a]"
+            >
+               {/* Vertical Resize Handle */}
+               <div
+                  className="absolute left-0 right-0 top-0 h-1 cursor-row-resize hover:bg-[#5B5FED]/50 z-50 transition-colors"
+                  onMouseDown={(e) => {
+                     e.preventDefault();
+                     setIsResizingTabs(true);
+                  }}
+               />
+               <div className="flex border-b border-[#2a2a2a]">
+                  {['Overview', 'Media', 'Guidance'].map(tab => (
+                     <button 
+                        key={tab}
+                        onClick={() => setActiveTab(tab.toLowerCase())}
+                        className={`flex-1 py-3 text-xs font-medium border-b-2 transition-colors ${
+                           activeTab === tab.toLowerCase() ? 'border-[#5B5FED] text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+                        }`}
+                     >
+                        {tab}
+                     </button>
+                  ))}
+               </div>
+               <div className="flex-1 p-4 overflow-y-auto custom-scrollbar min-h-0">
+                  {/* Tab Content */}
+                  {activeTab === 'media' && (
+                     <div className="text-center text-gray-500 text-sm mt-10">
+                        Media content will appear here
+                     </div>
+                  )}
+                  {activeTab === 'guidance' && (
+                     <div className="space-y-4">
+                        <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                           <div className="flex items-center justify-between mb-3">
+                              <h3 className="text-xs font-bold text-gray-400 uppercase">Protocol Questions</h3>
+                              {isGeneratingQuestions && (
+                                 <span className="text-xs text-[#5B5FED] flex items-center gap-1">
+                                    <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Generating AI questions...
+                                 </span>
+                              )}
+                           </div>
+                           {protocolQuestions.length === 0 ? (
+                              <p className="text-sm text-gray-500 italic">
+                                 {isGeneratingQuestions 
+                                    ? "AI is analyzing the conversation to generate relevant questions..." 
+                                    : "Questions will appear as the conversation progresses."}
+                              </p>
+                           ) : (
+                              <div className="space-y-3">
+                                 {protocolQuestions.map((question, idx) => (
+                                    <div 
+                                       key={question.id} 
+                                       className={`bg-[#0a0a0a] p-3 rounded-lg border transition-colors ${
+                                          question.isAsked 
+                                             ? 'border-green-500/30 bg-green-500/5' 
+                                             : 'border-[#2a2a2a] hover:border-[#5B5FED]/30'
+                                       }`}
+                                    >
+                                       <div className="flex items-start gap-2">
+                                          <span className="text-[#5B5FED] font-bold text-sm mt-0.5">{idx + 1}.</span>
+                                          <div className="flex-1">
+                                             <div className="flex items-start justify-between gap-2">
+                                                <p className="text-sm text-white leading-relaxed flex-1">{question.question}</p>
+                                                {question.isAsked && (
+                                                   <span className="text-xs text-green-400 font-medium">✓ Asked</span>
+                                                )}
+                                             </div>
+                                             <div className="flex items-center gap-2 mt-1">
+                                                <span className="text-xs text-gray-500 capitalize">{question.category}</span>
+                                                {question.isPredefined ? (
+                                                   <span className="text-xs bg-orange-500/20 text-orange-400 px-1.5 py-0.5 rounded">Essential</span>
+                                                ) : (
+                                                   <span className="text-xs bg-[#5B5FED]/20 text-[#5B5FED] px-1.5 py-0.5 rounded">AI Generated</span>
+                                                )}
+                                             </div>
+                                          </div>
+                                       </div>
+                                    </div>
+                                 ))}
                               </div>
-                            </div>
-                          )}
-                        </button>
-                      </div>
-                    ))}
+                           )}
+                        </div>
+                     </div>
+                  )}
+                  {activeTab === 'overview' && (
+                     <div className="space-y-4">
+                        {/* Summary Section */}
+                        <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                           <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Summary</h3>
+                           <p className="text-sm text-gray-300 leading-relaxed">
+                              {insights.summary || "No summary available yet. Information will appear as the conversation progresses."}
+                           </p>
+                        </div>
+
+                        {/* Incident Information */}
+                        {insights.incident && Object.keys(insights.incident).length > 0 && (
+                           <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                              <h3 className="text-xs font-bold text-gray-400 mb-3 uppercase">Incident Details</h3>
+                              <div className="space-y-2">
+                                 {insights.incident.incident_type && (
+                                    <div className="flex items-start gap-2">
+                                       <span className="text-xs text-gray-500 w-24 shrink-0">Type:</span>
+                                       <span className="text-sm text-white font-medium capitalize">{insights.incident.incident_type}</span>
+                                    </div>
+                                 )}
+                                 {insights.incident.severity && (
+                                    <div className="flex items-start gap-2">
+                                       <span className="text-xs text-gray-500 w-24 shrink-0">Severity:</span>
+                                       <span className={`text-sm font-medium capitalize ${
+                                          insights.incident.severity === 'critical' ? 'text-red-400' :
+                                          insights.incident.severity === 'high' ? 'text-orange-400' :
+                                          insights.incident.severity === 'medium' ? 'text-yellow-400' :
+                                          'text-green-400'
+                                       }`}>{insights.incident.severity}</span>
+                                    </div>
+                                 )}
+                                 {insights.incident.description && (
+                                    <div className="flex items-start gap-2">
+                                       <span className="text-xs text-gray-500 w-24 shrink-0">Description:</span>
+                                       <span className="text-sm text-gray-300">{insights.incident.description}</span>
+                                    </div>
+                                 )}
+                                 {insights.incident.current_state && (
+                                    <div className="flex items-start gap-2">
+                                       <span className="text-xs text-gray-500 w-24 shrink-0">Status:</span>
+                                       <span className="text-sm text-gray-300 capitalize">{insights.incident.current_state}</span>
+                                    </div>
+                                 )}
+                                 {insights.incident.source && (
+                                    <div className="flex items-start gap-2">
+                                       <span className="text-xs text-gray-500 w-24 shrink-0">Source:</span>
+                                       <span className="text-sm text-gray-300">{insights.incident.source}</span>
+                                    </div>
+                                 )}
+                              </div>
+                           </div>
+                        )}
+
+                        {/* Location Information */}
+                        {insights.location && insights.location.length > 0 && (
+                           <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                              <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Location</h3>
+                              <ul className="space-y-1.5">
+                                 {insights.location.map((loc, idx) => (
+                                    <li key={idx} className="text-sm text-gray-300 flex items-start gap-2">
+                                       <span className="text-[#5B5FED] mt-1">•</span>
+                                       <span>{loc}</span>
+                                    </li>
+                                 ))}
+                              </ul>
+                           </div>
+                        )}
+
+                        {/* Time Information */}
+                        {insights.time_info && Object.keys(insights.time_info).length > 0 && (
+                           <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                              <h3 className="text-xs font-bold text-gray-400 mb-3 uppercase">Timeline</h3>
+                              <div className="space-y-2">
+                                 {insights.time_info.start_time && (
+                                    <div className="flex items-start gap-2">
+                                       <span className="text-xs text-gray-500 w-24 shrink-0">Started:</span>
+                                       <span className="text-sm text-gray-300">{insights.time_info.start_time}</span>
+                                    </div>
+                                 )}
+                                 {insights.time_info.duration && (
+                                    <div className="flex items-start gap-2">
+                                       <span className="text-xs text-gray-500 w-24 shrink-0">Duration:</span>
+                                       <span className="text-sm text-gray-300">{insights.time_info.duration}</span>
+                                    </div>
+                                 )}
+                                 {insights.time_info.frequency && (
+                                    <div className="flex items-start gap-2">
+                                       <span className="text-xs text-gray-500 w-24 shrink-0">Frequency:</span>
+                                       <span className="text-sm text-gray-300">{insights.time_info.frequency}</span>
+                                    </div>
+                                 )}
+                              </div>
+                           </div>
+                        )}
+
+                        {/* Persons Involved */}
+                        {insights.persons_described && insights.persons_described.length > 0 && (
+                           <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                              <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Persons Involved</h3>
+                              <ul className="space-y-2">
+                                 {insights.persons_described.map((person, idx) => (
+                                    <li key={idx} className="text-sm text-gray-300 flex items-start gap-2">
+                                       <User className="w-4 h-4 mt-0.5 text-[#5B5FED] shrink-0" />
+                                       <span>{typeof person === 'string' ? person : `${person.name}${person.role ? ` (${person.role})` : ''}`}</span>
+                                    </li>
+                                 ))}
+                              </ul>
+                           </div>
+                        )}
+
+                        {/* Additional Information */}
+                        {insights.additional_info && insights.additional_info.length > 0 && (
+                           <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                              <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Additional Information</h3>
+                              <ul className="space-y-1.5">
+                                 {insights.additional_info.map((info, idx) => (
+                                    <li key={idx} className="text-sm text-gray-300 flex items-start gap-2">
+                                       <span className="text-[#5B5FED] mt-1">•</span>
+                                       <span>{info}</span>
+                                    </li>
+                                 ))}
+                              </ul>
+                           </div>
+                        )}
+                     </div>
+                  )}
+               </div>
+            </div>
+         </aside>
+         </>
+         )}
+
+         {/* View: Dispatch (Map) */}
+         {activeNavItem === 'dispatch' && (
+            <div className="flex-1 relative flex">
+               <div className="flex-1 relative">
+               <div className="absolute top-4 left-4 z-10 bg-[#1a1a1a]/90 backdrop-blur border border-[#333] p-4 rounded-lg shadow-lg w-80">
+                  <h3 className="text-white font-semibold mb-3">Dispatch Resources</h3>
+                  <div className="grid grid-cols-3 gap-2 mb-4">
+                     <button
+                        onClick={() => setDispatchEmergencyType('hospital')}
+                        className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
+                           dispatchEmergencyType === 'hospital'
+                           ? 'border-[#3b82f6] bg-[#3b82f6]/10 text-[#3b82f6]'
+                           : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#3b82f6]/50 hover:text-[#3b82f6]'
+                        }`}
+                     >
+                        <Ambulance className="w-6 h-6 mb-1" />
+                        <span className="text-xs font-medium">Hospital</span>
+                     </button>
+                     <button
+                        onClick={() => setDispatchEmergencyType('police')}
+                        className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
+                           dispatchEmergencyType === 'police'
+                           ? 'border-[#22c55e] bg-[#22c55e]/10 text-[#22c55e]'
+                           : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#22c55e]/50 hover:text-[#22c55e]'
+                        }`}
+                     >
+                        <Shield className="w-6 h-6 mb-1" />
+                        <span className="text-xs font-medium">Police</span>
+                     </button>
+                     <button
+                        onClick={() => setDispatchEmergencyType('fire')}
+                        className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
+                           dispatchEmergencyType === 'fire'
+                           ? 'border-[#ef4444] bg-[#ef4444]/10 text-[#ef4444]'
+                           : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#ef4444]/50 hover:text-[#ef4444]'
+                        }`}
+                     >
+                        <Flame className="w-6 h-6 mb-1" />
+                        <span className="text-xs font-medium">Fire</span>
+                     </button>
+                  </div>
+                  <Button
+                     onClick={async () => {
+                        if (dispatchMapRef.current) {
+                           setIsSearchingStations(true);
+                           try {
+                              await dispatchMapRef.current.searchNearestStations();
+                           } finally {
+                              setIsSearchingStations(false);
+                           }
+                        }
+                     }}
+                     disabled={isSearchingStations}
+                     className="w-full bg-[#5B5FED] hover:bg-[#4a4ec0] text-white font-semibold py-2 rounded-lg transition-all shadow-lg"
+                  >
+                     {isSearchingStations ? (
+                        <>
+                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                           Searching...
+                        </>
+                     ) : (
+                        <>
+                           <Search className="w-4 h-4 mr-2" />
+                           Find Nearest Stations
+                        </>
+                     )}
+                  </Button>
+               </div>
+               <DispatchMap 
+                  ref={dispatchMapRef}
+                  callerLatitude={mapLocation.latitude}
+                  callerLongitude={mapLocation.longitude}
+                  callerAddress={mapLocation.address}
+                  selectedType={dispatchEmergencyType}
+                  onStationsFound={(stations) => setDispatchStations(stations)}
+               />
+               </div>
+
+               {/* Stations List Panel */}
+               {dispatchStations.length > 0 && (
+                  <aside className="w-96 border-l border-[#2a2a2a] bg-[#0a0a0a] flex flex-col">
+                     <div className="p-4 border-b border-[#2a2a2a]">
+                        <h3 className="text-white font-semibold mb-1">Nearest Stations</h3>
+                        <p className="text-xs text-gray-400">{dispatchStations.length} stations found</p>
+                     </div>
+                     <div className="flex-1 overflow-y-auto">
+                        {dispatchStations.map((station, idx) => (
+                           <div 
+                              key={station.id}
+                              className="p-4 border-b border-[#2a2a2a] hover:bg-[#1a1a1a] transition-colors cursor-pointer"
+                              onClick={() => dispatchMapRef.current?.flyToStation(station)}
+                           >
+                              <div className="flex items-start justify-between mb-2">
+                                 <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                       <div className={`w-2 h-2 rounded-full ${
+                                          station.type === 'hospital' ? 'bg-[#3b82f6]' :
+                                          station.type === 'police' ? 'bg-[#22c55e]' :
+                                          'bg-[#ef4444]'
+                                       }`}></div>
+                                       <h4 className="text-white font-medium text-sm">{station.name}</h4>
+                                    </div>
+                                    <p className="text-xs text-gray-400 mb-1">{station.address}</p>
+                                    <div className="flex items-center gap-3 text-xs text-gray-500">
+                                       <span>📍 {station.distance.toFixed(2)} km</span>
+                                       {station.duration && <span>🕐 {station.duration}</span>}
+                                    </div>
+                                 </div>
+                                 <div className="text-lg font-bold text-gray-600">#{idx + 1}</div>
+                              </div>
+                              <div className="flex gap-2 mt-3">
+                                 <Button
+                                    size="sm"
+                                    onClick={(e) => {
+                                       e.stopPropagation();
+                                       handleEmergencySMS(station);
+                                    }}
+                                    className="flex-1 bg-[#5B5FED] hover:bg-[#4a4ec0] text-white text-xs"
+                                 >
+                                    <MessageSquare className="w-3 h-3 mr-1" />
+                                    SMS
+                                 </Button>
+                                 <Button
+                                    size="sm"
+                                    onClick={(e) => {
+                                       e.stopPropagation();
+                                       handleEmergencyCall(station);
+                                    }}
+                                    className="flex-1 bg-[#5B5FED] hover:bg-[#4a4ec0] text-white text-xs"
+                                 >
+                                    <Phone className="w-3 h-3 mr-1" />
+                                    Call
+                                 </Button>
+                              </div>
+                           </div>
+                        ))}
+                     </div>
+                  </aside>
+               )}
+            </div>
+         )}
+
+         {/* View: Analytics */}
+         {activeNavItem === 'analytics' && (
+            <div className="flex h-full w-full bg-[#0f1117] text-white font-sans overflow-hidden">
+              {/* Sidebar */}
+              <div className="w-64 flex flex-col border-r border-gray-800 bg-[#0f1117] p-4">
+                <div className="mb-8">
+                   {/* Sidebar Header if needed */}
+                </div>
+                
+                <nav className="space-y-2">
+                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800 bg-gray-800/50 text-white">
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    Ask Prepared
+                  </Button>
+                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
+                    <LayoutDashboard className="mr-2 h-4 w-4" />
+                    Dashboards
+                  </Button>
+                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
+                    <Flame className="mr-2 h-4 w-4" />
+                    Incidents
+                  </Button>
+                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
+                    <BarChart3 className="mr-2 h-4 w-4" />
+                    Usage
+                  </Button>
+                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
+                    <History className="mr-2 h-4 w-4" />
+                    Audit Logs
+                  </Button>
+                </nav>
+              </div>
+
+              {/* Main Content */}
+              <div className="flex-1 flex flex-col items-center justify-center p-8 relative">
+                
+                {/* Logo Section */}
+                <div className="flex items-center gap-3 mb-8">
+                  <img 
+                    src="/image-removebg-preview (10).png" 
+                    alt="Prepared Logo" 
+                    className="h-40 w-auto"
+                  />
+                </div>
+
+                {/* Search Bar Section */}
+                <div className="w-full max-w-2xl relative mb-8">
+                  <div className="relative flex items-center bg-[#1a1d24] rounded-xl border border-gray-700 p-2 shadow-lg">
+                    <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full bg-gray-700/50 text-gray-400 hover:text-white mr-2">
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                    
+                    <div className="flex items-center bg-gray-800/50 rounded-full px-3 py-1 mr-2">
+                      <Globe className="h-3 w-3 text-gray-400 mr-2" />
+                      <span className="text-xs text-gray-300">Search</span>
+                    </div>
+
+                    <input 
+                      type="text" 
+                      placeholder="Which incident types scored lower than 70% i"
+                      className="flex-1 bg-transparent border-none outline-none text-gray-300 placeholder-gray-500 text-sm h-10"
+                    />
+
+                    <Button size="icon" className="h-8 w-8 rounded-full bg-[#e87c46] hover:bg-[#d66a35] text-white ml-2">
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
-              )}
 
-              {/* Empty State */}
-              {!isSearchingStations && dispatchStations.length === 0 && (
-                <div className="bg-[#2a2a2a] rounded-lg p-6 text-center border border-[#333333]">
-                  <Search className="w-12 h-12 text-gray-500 mx-auto mb-3" />
-                  <p className="text-sm text-gray-400">
-                    Select an emergency type and click "Find Nearest Stations" to see the closest facilities.
-                  </p>
+                {/* Quick Action Cards */}
+                <div className="flex flex-wrap justify-center gap-4">
+                  <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
+                    <Phone className="h-4 w-4 text-gray-400" />
+                    YTD Total Call Volume
+                  </Button>
+                  <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
+                    <Tag className="h-4 w-4 text-gray-400" />
+                    Top 10 Call Tags
+                  </Button>
+                  <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
+                    <LineChart className="h-4 w-4 text-gray-400" />
+                    Average QA Scores
+                  </Button>
+                  <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
+                    <Award className="h-4 w-4 text-gray-400" />
+                    Highest-Performing Staff
+                  </Button>
                 </div>
-              )}
+
+              </div>
             </div>
-          </div>
-        )}
-      </div >
-    </div >
+         )}
+
+         {/* View: Training */}
+         {activeNavItem === 'training' && (
+            <>
+            {/* Left Sidebar: Training Sessions */}
+            <aside className="w-80 border-r border-[#2a2a2a] flex flex-col bg-[#0a0a0a]">
+               <div className="p-4 border-b border-[#2a2a2a]">
+                  <div className="flex items-center justify-between mb-4">
+                     <div className="text-sm font-medium text-gray-400 flex items-center gap-1">Training Sessions</div>
+                     <Button 
+                        size="icon" 
+                        className="h-8 w-8 bg-[#5B5FED] hover:bg-[#4a4ec0] rounded-md"
+                        onClick={handleStartTraining}
+                        disabled={isTrainingInProgress}
+                     >
+                        {isTrainingInProgress ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-5 h-5" />}
+                     </Button>
+                  </div>
+                  <div className="relative mb-3">
+                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                     <Input placeholder="Search Sessions" className="pl-9 bg-[#1a1a1a] border-[#333] text-sm h-9 text-white placeholder:text-gray-600 focus-visible:ring-1 focus-visible:ring-[#5B5FED]" />
+                  </div>
+               </div>
+               
+               <div className="flex-1 overflow-y-auto custom-scrollbar">
+                  {trainingLogs.length === 0 ? (
+                     <div className="p-8 text-center text-gray-500 text-sm">
+                        No training sessions yet. Start a new scenario to begin.
+                     </div>
+                  ) : (
+                     trainingLogs.map((log, idx) => (
+                        <div 
+                           key={idx}
+                           onClick={() => {
+                              setActiveTrainingSession(log.session_id);
+                              if (log.conversation) setTrainingConversation(log.conversation);
+                           }}
+                           className={`p-3 border-b border-[#1a1a2a] cursor-pointer hover:bg-[#1a1a1a] transition-colors relative ${
+                              activeTrainingSession === log.session_id ? 'bg-gradient-to-r from-[#1a1a1a] to-[#1e1e2e]' : ''
+                           }`}
+                        >
+                           {activeTrainingSession === log.session_id && <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#5B5FED]"></div>}
+                           <div className="flex items-start gap-3">
+                              <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                                 log.status === 'completed' ? 'bg-green-900/30 text-green-400' : 
+                                 log.status === 'error' ? 'bg-red-900/30 text-red-400' : 
+                                 'bg-blue-900/30 text-blue-400'
+                              }`}>
+                                 <GraduationCap className="w-4 h-4" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                 <div className="flex items-center justify-between mb-1">
+                                    <span className={`text-sm font-medium truncate ${activeTrainingSession === log.session_id ? 'text-white' : 'text-gray-300'}`}>{log.scenario}</span>
+                                    <div className="text-xs text-gray-500 flex flex-col items-end">
+                                       <span>{log.duration || log.time}</span>
+                                    </div>
+                                 </div>
+                                 <div className="flex items-center gap-2">
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                       log.status === 'active' ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' : 'bg-gray-800/50 border-gray-700 text-gray-400'
+                                    }`}>
+                                       {log.status.toUpperCase()}
+                                    </span>
+                                 </div>
+                              </div>
+                           </div>
+                        </div>
+                     ))
+                  )}
+               </div>
+            </aside>
+
+            {/* Center Panel: Training Chat */}
+            <main className="flex-1 flex flex-col bg-[#0a0a0a] relative min-w-0">
+               {activeTrainingSession ? (
+                  <>
+                     <div className="h-16 border-b border-[#2a2a2a] flex items-center justify-between px-6 shrink-0">
+                        <div className="flex items-center gap-4">
+                           <div>
+                              <h2 className="text-lg font-semibold text-white">Training Simulation</h2>
+                              <div className="flex items-center gap-2 text-xs text-gray-500">
+                                 <span className={`${
+                                    isTrainingInProgress ? 'text-[#5B5FED]' : 'text-gray-500'
+                                 }`}>
+                                    {isTrainingInProgress ? 'Active Scenario' : 'Scenario Ended'}
+                                 </span>
+                                 <span className="w-1 h-1 rounded-full bg-gray-600"></span>
+                                 <div className="flex items-center gap-1 text-gray-400 bg-[#1a1a1a] px-2 py-0.5 rounded border border-[#333]">
+                                    {trainingLogs.find(l => l.session_id === activeTrainingSession)?.scenario || "Unknown Scenario"}
+                                 </div>
+                                 {isTrainingInProgress && trainingStartTime && (
+                                    <>
+                                       <span className="w-1 h-1 rounded-full bg-gray-600"></span>
+                                       <span className="text-gray-400 font-mono">
+                                          <Clock className="w-3 h-3 inline mr-1" />
+                                          <TrainingTimer startTime={trainingStartTime} />
+                                       </span>
+                                    </>
+                                 )}
+                              </div>
+                           </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                           <Button 
+                              variant={isTrainingInProgress ? "destructive" : "secondary"} 
+                              size="sm" 
+                              className={`${
+                                 isTrainingInProgress 
+                                    ? "bg-red-900/20 text-red-400 hover:bg-red-900/40 border border-red-900/50" 
+                                    : "bg-gray-800 text-gray-400 border border-gray-700 cursor-not-allowed"
+                              }`}
+                              onClick={handleStopTraining}
+                              disabled={!isTrainingInProgress}
+                           >
+                              {isTrainingInProgress ? "Stop Training" : "Session Ended"}
+                           </Button>
+                        </div>
+                     </div>
+
+                     <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+                        <div className="flex justify-center mb-6">
+                           <div className="flex items-center gap-2 text-xs text-gray-500">
+                              <Play className="w-3 h-3" /> Simulation Started
+                           </div>
+                        </div>
+               
+                        {trainingConversation.map((msg, idx) => (
+                           <div key={idx} className={`flex ${msg.sender === 'Dispatch' ? 'justify-end' : 'justify-start'}`}>
+                              <div className={`max-w-[80%] ${msg.sender === 'Dispatch' ? 'items-end' : 'items-start'} flex flex-col`}>
+                                 <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-xs font-medium text-gray-400">{msg.sender}</span>
+                                    <span className="text-[10px] text-gray-600">{msg.time}</span>
+                                 </div>
+                                 <div className={`p-3 text-sm ${
+                                    msg.sender === 'Dispatch' 
+                                       ? 'bg-[#1a1a1a] border border-[#333] rounded-tr-sm text-gray-300' 
+                                       : 'bg-[#1a1a1a] border border-[#333] rounded-tl-sm text-white'
+                                 }`}>
+                                    {msg.message}
+                                 </div>
+                              </div>
+                           </div>
+                        ))}
+                        <div ref={conversationEndRef} />
+                     </div>
+                     
+                     {/* Input Area */}
+                     {isTrainingInProgress ? (
+                        <div className="p-4 border-t border-[#2a2a2a] bg-[#0a0a0a]">
+                           {/* Suggested Question Display */}
+                           {activeTrainingSession && protocolManagerRef.current?.getSession(activeTrainingSession) && (
+                              (() => {
+                                 const unansweredQuestions = protocolManagerRef.current!.getUnansweredQuestions(activeTrainingSession);
+                                 const nextQuestion = unansweredQuestions[0];
+                                 
+                                 return nextQuestion && !messageText ? (
+                                    <div className="mb-3 p-3 bg-[#1a1a1a] border border-[#333] rounded-lg">
+                                       <div className="flex items-start gap-2">
+                                          <Sparkles className="w-4 h-4 text-[#5B5FED] mt-0.5 shrink-0" />
+                                          <div className="flex-1">
+                                             <p className="text-xs text-gray-400 mb-1">Suggested Question:</p>
+                                             <button
+                                                onClick={() => setMessageText(nextQuestion.question)}
+                                                className="text-sm text-gray-300 hover:text-white text-left w-full transition-colors"
+                                             >
+                                                {nextQuestion.question}
+                                             </button>
+                                          </div>
+                                          <button
+                                             onClick={() => setMessageText(nextQuestion.question)}
+                                             className="text-xs text-[#5B5FED] hover:text-[#7b7ff0] shrink-0"
+                                          >
+                                             Use this →
+                                          </button>
+                                       </div>
+                                    </div>
+                                 ) : null;
+                              })()
+                           )}
+                           
+                           <div className="flex items-center gap-2">
+                              <Button
+                                 variant="ghost"
+                                 size="icon"
+                                 className={`h-10 w-10 rounded-full transition-all ${
+                                    isMicActive 
+                                       ? 'bg-red-500/20 text-red-500 hover:bg-red-500/30' 
+                                       : 'bg-[#1a1a1a] text-gray-400 hover:text-white hover:bg-[#2a2a2a]'
+                                 }`}
+                                 onClick={toggleMicrophone}
+                              >
+                                 {isMicActive ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                              </Button>
+                              <div className="flex-1 relative">
+                                 <Input
+                                    value={messageText}
+                                    onChange={(e) => setMessageText(e.target.value)}
+                                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendMessage()}
+                                    placeholder={isMicActive ? "Listening... Speak now" : "Type your response..."}
+                                    className="bg-[#1a1a1a] border-[#333] text-white placeholder:text-gray-600 focus-visible:ring-[#5B5FED]"
+                                 />
+                                 {isMicActive && (
+                                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                                       <div className="flex items-center gap-1">
+                                          <div className="w-1 h-3 bg-red-500 rounded-full animate-pulse" style={{ animationDelay: '0ms' }}></div>
+                                          <div className="w-1 h-4 bg-red-500 rounded-full animate-pulse" style={{ animationDelay: '150ms' }}></div>
+                                          <div className="w-1 h-3 bg-red-500 rounded-full animate-pulse" style={{ animationDelay: '300ms' }}></div>
+                                       </div>
+                                    </div>
+                                 )}
+                              </div>
+                              <Button 
+                                 onClick={handleSendMessage}
+                                 disabled={!messageText.trim()}
+                                 className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white"
+                              >
+                                 <Send className="w-4 h-4" />
+                              </Button>
+                           </div>
+                        </div>
+                     ) : (
+                        <div className="p-4 border-t border-[#2a2a2a] bg-[#0a0a0a]">
+                           <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333] text-center">
+                              <p className="text-sm text-gray-500">Training session has ended. View the Evaluation tab for your performance review.</p>
+                           </div>
+                        </div>
+                     )}
+                  </>
+               ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center text-gray-500">
+                     <GraduationCap className="w-16 h-16 mb-4 opacity-20" />
+                     <p className="mb-4">Select a session or start a new scenario</p>
+                     <Button 
+                        onClick={handleStartTraining}
+                        disabled={isTrainingInProgress}
+                        className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white"
+                     >
+                        {isTrainingInProgress ? (
+                           <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Starting...
+                           </>
+                        ) : (
+                           <>
+                              <Play className="w-4 h-4 mr-2" />
+                              Start New Scenario
+                           </>
+                        )}
+                     </Button>
+                  </div>
+               )}
+            </main>
+
+            {/* Right Panel: Training Insights */}
+            <aside 
+               style={{ width: rightWidth }}
+               className="border-l border-[#2a2a2a] flex flex-col bg-[#0a0a0a] relative overflow-hidden"
+            >
+               {/* Resize Handle */}
+               <div
+                  className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[#5B5FED]/50 z-50 transition-colors"
+                  onMouseDown={(e) => {
+                     e.preventDefault();
+                     setIsResizingRight(true);
+                  }}
+               />
+               
+               <div className="flex-1 flex flex-col min-h-0">
+                  <div className="flex border-b border-[#2a2a2a] shrink-0">
+                     {['Insights', 'Evaluation', 'Location', 'Guidance'].map(tab => (
+                        <button 
+                           key={tab}
+                           onClick={() => setActiveTab(tab.toLowerCase())}
+                           className={`flex-1 py-3 text-xs font-medium border-b-2 transition-colors ${
+                              activeTab === tab.toLowerCase() ? 'border-[#5B5FED] text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+                           }`}
+                        >
+                           {tab}
+                        </button>
+                     ))}
+                  </div>
+                  <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
+                     <div className="p-4">
+                     {/* Tab Content */}
+                     {activeTab === 'guidance' && (
+                        <div className="space-y-4">
+                           {activeTrainingSession ? (
+                              <>
+                                 <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                                    <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Suggested Questions</h3>
+                                    <p className="text-xs text-gray-500 mb-3">AI-generated questions based on the conversation</p>
+                                    {protocolManagerRef.current?.getSession(activeTrainingSession) ? (
+                                       <div className="space-y-3">
+                                          {/* Loading State */}
+                                          {isGeneratingQuestions && (
+                                             <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
+                                                <Loader2 className="w-4 h-4 animate-spin text-[#5B5FED]" />
+                                                <span>Analyzing conversation and generating suggestions...</span>
+                                             </div>
+                                          )}
+
+                                          {/* Unanswered Questions */}
+                                          {protocolManagerRef.current.getUnansweredQuestions(activeTrainingSession).length > 0 && (
+                                             <div>
+                                                <h4 className="text-xs font-semibold text-[#5B5FED] mb-2">Questions to Ask:</h4>
+                                                <ul className="space-y-2">
+                                                   {protocolManagerRef.current.getUnansweredQuestions(activeTrainingSession).map((q) => (
+                                                      <li key={q.id} className="flex items-start gap-2 text-sm">
+                                                         <span className="text-yellow-500 mt-0.5">❓</span>
+                                                         <span className="text-gray-300">{q.question}</span>
+                                                      </li>
+                                                   ))}
+                                                </ul>
+                                             </div>
+                                          )}
+
+                                          {/* Answered Questions */}
+                                          {protocolManagerRef.current.getAnsweredQuestions(activeTrainingSession).length > 0 && (
+                                             <div>
+                                                <h4 className="text-xs font-semibold text-green-400 mb-2">Questions Covered:</h4>
+                                                <ul className="space-y-2">
+                                                   {protocolManagerRef.current.getAnsweredQuestions(activeTrainingSession).map((q) => (
+                                                      <li key={q.id} className="flex items-start gap-2 text-sm">
+                                                         <span className="text-green-500 mt-0.5">✓</span>
+                                                         <span className="text-gray-500 line-through">{q.question}</span>
+                                                      </li>
+                                                   ))}
+                                                </ul>
+                                             </div>
+                                          )}
+
+                                          {/* Empty State */}
+                                          {!isGeneratingQuestions && 
+                                           protocolManagerRef.current.getUnansweredQuestions(activeTrainingSession).length === 0 && 
+                                           protocolManagerRef.current.getAnsweredQuestions(activeTrainingSession).length === 0 && (
+                                             <p className="text-sm text-gray-500 text-center py-4">Start the conversation to see AI-generated suggestions</p>
+                                          )}
+
+                                          {/* Completion Progress */}
+                                          {(protocolManagerRef.current.getUnansweredQuestions(activeTrainingSession).length > 0 || 
+                                            protocolManagerRef.current.getAnsweredQuestions(activeTrainingSession).length > 0) && (
+                                             <div className="pt-3 border-t border-[#333]">
+                                                <div className="flex items-center justify-between mb-2">
+                                                   <span className="text-xs text-gray-400">Protocol Completion</span>
+                                                   <span className="text-xs font-bold text-[#5B5FED]">
+                                                      {protocolManagerRef.current.getCompletionPercentage(activeTrainingSession)}%
+                                                   </span>
+                                                </div>
+                                                <div className="w-full h-2 bg-[#0a0a0a] rounded-full overflow-hidden">
+                                                   <div 
+                                                      className="h-full bg-gradient-to-r from-[#5B5FED] to-[#7b7ff0] transition-all duration-500"
+                                                      style={{ width: `${protocolManagerRef.current.getCompletionPercentage(activeTrainingSession)}%` }}
+                                                   />
+                                                </div>
+                                             </div>
+                                          )}
+                                       </div>
+                                    ) : (
+                                       <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
+                                          <Loader2 className="w-4 h-4 animate-spin text-[#5B5FED]" />
+                                          <span>Initializing protocol assistant...</span>
+                                       </div>
+                                    )}
+                                 </div>
+
+                                 <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                                    <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Best Practices</h3>
+                                    <ul className="space-y-2 text-sm text-gray-300">
+                                       <li className="flex items-start gap-2">
+                                          <span className="text-[#5B5FED]">•</span>
+                                          <span>Listen actively and acknowledge what the caller says</span>
+                                       </li>
+                                       <li className="flex items-start gap-2">
+                                          <span className="text-[#5B5FED]">•</span>
+                                          <span>Ask follow-up questions based on their responses</span>
+                                       </li>
+                                       <li className="flex items-start gap-2">
+                                          <span className="text-[#5B5FED]">•</span>
+                                          <span>Verify exact location and cross-streets if possible</span>
+                                       </li>
+                                       <li className="flex items-start gap-2">
+                                          <span className="text-[#5B5FED]">•</span>
+                                          <span>Stay calm, speak clearly, and reassure the caller</span>
+                                       </li>
+                                    </ul>
+                                 </div>
+                              </>
+                           ) : (
+                              <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333] text-center">
+                                 <p className="text-sm text-gray-500">Start a training session to receive AI-powered guidance.</p>
+                              </div>
+                           )}
+                        </div>
+                     )}
+                     {activeTab === 'location' && (
+                        <div className="h-[600px] w-full bg-[#1a1a1a] rounded-lg overflow-hidden relative">
+                           <MapView 
+                              latitude={mapLocation.latitude} 
+                              longitude={mapLocation.longitude} 
+                           />
+                        </div>
+                     )}
+                     {activeTab === 'insights' && (
+                        <div className="space-y-4">
+                           {/* Training Insights - Extracted Information */}
+                           {activeTrainingSession && trainingInsights && (
+                              <>
+                                 {trainingInsights.summary && (
+                                    <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                                       <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Call Summary</h3>
+                                       <p className="text-sm text-gray-300">{trainingInsights.summary}</p>
+                                    </div>
+                                 )}
+
+                                 {trainingInsights.persons_described && trainingInsights.persons_described.length > 0 && (
+                                    <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                                       <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Persons Involved</h3>
+                                       <ul className="space-y-1">
+                                          {trainingInsights.persons_described.map((person, idx) => (
+                                             <li key={idx} className="text-sm text-gray-300 flex items-start gap-2">
+                                                <span className="text-[#5B5FED] mt-1">•</span>
+                                                <span>{typeof person === 'string' ? person : `${person.name} (${person.role})`}</span>
+                                             </li>
+                                          ))}
+                                       </ul>
+                                    </div>
+                                 )}
+
+                                 {trainingInsights.location && trainingInsights.location.length > 0 && (
+                                    <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                                       <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Location Details</h3>
+                                       <p className="text-sm text-gray-300">{trainingInsights.location.join(', ')}</p>
+                                    </div>
+                                 )}
+
+                                 {trainingInsights.incident && Object.keys(trainingInsights.incident).length > 0 && (
+                                    <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
+                                       <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Incident Details</h3>
+                                       <div className="space-y-2">
+                                          {Object.entries(trainingInsights.incident).map(([key, value]) => (
+                                             <div key={key} className="text-sm">
+                                                <span className="text-gray-500">{key}:</span>
+                                                <span className="text-gray-300 ml-2">{String(value)}</span>
+                                             </div>
+                                          ))}
+                                       </div>
+                                    </div>
+                                 )}
+                              </>
+                           )}
+                        </div>
+                     )}
+                     {activeTab === 'evaluation' && (
+                        <div className="space-y-4">
+                           {trainingEvaluation ? (
+                              <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333] animate-in fade-in slide-in-from-bottom-4 duration-500">
+                                 <div className="flex items-center justify-between mb-4">
+                                    <h3 className="text-xs font-bold text-[#5B5FED] uppercase">Performance Evaluation</h3>
+                                    {trainingConfidence && (
+                                       <span className={`text-xs font-bold px-2 py-1 rounded ${
+                                          trainingConfidence > 80 ? 'bg-green-900/30 text-green-400' : 
+                                          trainingConfidence > 60 ? 'bg-yellow-900/30 text-yellow-400' : 
+                                          'bg-red-900/30 text-red-400'
+                                       }`}>
+                                          Score: {trainingConfidence}%
+                                       </span>
+                                    )}
+                                 </div>
+                                 <div className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-strong:text-white prose-p:text-gray-300">
+                                    <ReactMarkdown>{trainingEvaluation}</ReactMarkdown>
+                                 </div>
+                              </div>
+                           ) : (
+                              <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333] text-center">
+                                 <p className="text-sm text-gray-500">Complete a training session to view your evaluation.</p>
+                              </div>
+                           )}
+                        </div>
+                     )}
+                     </div>
+                  </div>
+               </div>
+            </aside>
+            </>
+         )}
+
+         {/* View: Settings */}
+         {activeNavItem === 'settings' && (
+            <div className="flex-1 flex bg-[#0a0a0a] overflow-hidden">
+               {/* Settings Sidebar */}
+               <div className={`${isSettingsSidebarOpen ? 'w-64' : 'w-0'} bg-[#1a1a1a] border-r border-gray-800 transition-all duration-300 overflow-hidden flex flex-col`}>
+                  <div className="p-4 border-b border-gray-800">
+                     <h3 className="text-white font-semibold">Settings Menu</h3>
+                  </div>
+                  <nav className="flex-1 p-4 space-y-2">
+                     <button 
+                        onClick={() => setActiveSettingsSection('call-forwarding')}
+                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                           activeSettingsSection === 'call-forwarding' 
+                              ? 'bg-[#5B5FED]/10 text-[#5B5FED]' 
+                              : 'text-gray-400 hover:bg-[#2a2a2a] hover:text-white'
+                        }`}
+                     >
+                        <Phone className="w-4 h-4" />
+                        <span className="text-sm font-medium">Call Forwarding</span>
+                     </button>
+                     <button 
+                        onClick={() => setActiveSettingsSection('language')}
+                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                           activeSettingsSection === 'language' 
+                              ? 'bg-[#5B5FED]/10 text-[#5B5FED]' 
+                              : 'text-gray-400 hover:bg-[#2a2a2a] hover:text-white'
+                        }`}
+                     >
+                        <Languages className="w-4 h-4" />
+                        <span className="text-sm font-medium">Default Language</span>
+                     </button>
+                     <button 
+                        onClick={() => setActiveSettingsSection('storage')}
+                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                           activeSettingsSection === 'storage' 
+                              ? 'bg-[#5B5FED]/10 text-[#5B5FED]' 
+                              : 'text-gray-400 hover:bg-[#2a2a2a] hover:text-white'
+                        }`}
+                     >
+                        <Trash2 className="w-4 h-4" />
+                        <span className="text-sm font-medium">Clear Storage</span>
+                     </button>
+                  </nav>
+               </div>
+
+               {/* Settings Content */}
+               <div className="flex-1 overflow-y-auto">
+                  {/* Toggle Sidebar Button */}
+                  <div className="sticky top-0 z-10 bg-[#0a0a0a]/95 backdrop-blur-sm border-b border-gray-800">
+                     <div className="px-6 py-4 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                           <button
+                              onClick={() => setIsSettingsSidebarOpen(!isSettingsSidebarOpen)}
+                              className="p-2 rounded-lg bg-[#1a1a1a] border border-gray-800 hover:bg-[#2a2a2a] transition-colors"
+                           >
+                              {isSettingsSidebarOpen ? (
+                                 <ChevronLeft className="w-4 h-4 text-gray-400" />
+                              ) : (
+                                 <ChevronRight className="w-4 h-4 text-gray-400" />
+                              )}
+                           </button>
+                           <div>
+                              <h2 className="text-2xl font-bold text-white">Settings</h2>
+                              <p className="text-sm text-gray-400">Manage your agency settings and preferences</p>
+                           </div>
+                        </div>
+                     </div>
+                  </div>
+
+                  <div className="p-8">
+                     <div className="max-w-4xl mx-auto">
+                        {/* Call Forwarding Section */}
+                        {activeSettingsSection === 'call-forwarding' && (
+                           <div className="bg-[#1a1a1a] border border-gray-800 rounded-lg p-6">
+                              <div className="flex items-center gap-3 mb-6">
+                                 <div className="w-10 h-10 rounded-lg bg-[#5B5FED]/10 flex items-center justify-center">
+                                    <Phone className="w-5 h-5 text-[#5B5FED]" />
+                                 </div>
+                                 <div>
+                                    <h3 className="text-lg font-semibold text-white">Call Forwarding</h3>
+                                    <p className="text-sm text-gray-400">Forward incoming calls to another number</p>
+                                 </div>
+                              </div>
+                              
+                              <div className="space-y-4">
+                                 <div>
+                                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                                       Forward To Phone Number
+                                    </label>
+                                    <input
+                                       type="tel"
+                                       placeholder="+1234567890"
+                                       value={callForwardNumber}
+                                       onChange={(e) => setCallForwardNumber(e.target.value)}
+                                       className="w-full px-4 py-2.5 bg-[#0a0a0a] border border-gray-700 rounded-lg text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#5B5FED] focus:border-transparent"
+                                    />
+                                    <p className="text-xs text-gray-500 mt-2">
+                                       Leave empty to disable. Use international format (e.g., +91 for India)
+                                    </p>
+                                 </div>
+                                 
+                                 <Button 
+                                    onClick={saveCallForwarding}
+                                    disabled={savingSettings}
+                                    className="w-full bg-[#5B5FED] hover:bg-[#4a4ec0] text-white"
+                                 >
+                                    {savingSettings ? (
+                                       <>
+                                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                          Saving...
+                                       </>
+                                    ) : (
+                                       <>
+                                          <Save className="w-4 h-4 mr-2" />
+                                          Save Call Forwarding
+                                       </>
+                                    )}
+                                 </Button>
+                              </div>
+                           </div>
+                        )}
+
+                        {/* Default Language Section */}
+                        {activeSettingsSection === 'language' && (
+                           <div className="bg-[#1a1a1a] border border-gray-800 rounded-lg p-6">
+                              <div className="flex items-center gap-3 mb-6">
+                                 <div className="w-10 h-10 rounded-lg bg-[#5B5FED]/10 flex items-center justify-center">
+                                    <Languages className="w-5 h-5 text-[#5B5FED]" />
+                                 </div>
+                                 <div>
+                                    <h3 className="text-lg font-semibold text-white">Default Translation Language</h3>
+                                    <p className="text-sm text-gray-400">Set your preferred translation language</p>
+                                 </div>
+                              </div>
+                              
+                              <div className="space-y-4">
+                                 <div>
+                                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                                       Default Language
+                                    </label>
+                                    <select 
+                                       value={defaultLanguage}
+                                       onChange={(e) => setDefaultLanguage(e.target.value)}
+                                       className="w-full px-4 py-2.5 bg-[#0a0a0a] border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-[#5B5FED] focus:border-transparent"
+                                    >
+                                       <option value="en">English</option>
+                                       <option value="hi">Hindi (हिन्दी)</option>
+                                       <option value="bn">Bengali (বাংলা)</option>
+                                       <option value="te">Telugu (తెలుగు)</option>
+                                       <option value="mr">Marathi (मराठी)</option>
+                                       <option value="ta">Tamil (தமிழ்)</option>
+                                       <option value="gu">Gujarati (ગુજરાતી)</option>
+                                       <option value="kn">Kannada (ಕನ್ನಡ)</option>
+                                       <option value="ml">Malayalam (മലയാളം)</option>
+                                       <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
+                                       <option value="or">Odia (ଓଡ଼ିଆ)</option>
+                                    </select>
+                                    <p className="text-xs text-gray-500 mt-2">
+                                       This will be used as the default target language for real-time translation
+                                    </p>
+                                 </div>
+                                 
+                                 <Button 
+                                    onClick={saveLanguagePreference}
+                                    disabled={savingSettings}
+                                    className="w-full bg-[#5B5FED] hover:bg-[#4a4ec0] text-white"
+                                 >
+                                    {savingSettings ? (
+                                       <>
+                                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                          Saving...
+                                       </>
+                                    ) : (
+                                       <>
+                                          <Save className="w-4 h-4 mr-2" />
+                                          Save Language Preference
+                                       </>
+                                    )}
+                                 </Button>
+                              </div>
+                           </div>
+                        )}
+
+                        {/* Clear Local Storage Section */}
+                        {activeSettingsSection === 'storage' && (
+                           <div className="bg-[#1a1a1a] border border-red-900/30 rounded-lg p-6">
+                              <div className="flex items-center gap-3 mb-6">
+                                 <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center">
+                                    <Trash2 className="w-5 h-5 text-red-500" />
+                                 </div>
+                                 <div>
+                                    <h3 className="text-lg font-semibold text-white">Clear Local Storage</h3>
+                                    <p className="text-sm text-red-400/70">Remove all cached data and preferences</p>
+                                 </div>
+                              </div>
+                              
+                              <div className="space-y-4">
+                                 <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-4">
+                                    <p className="text-sm text-gray-300 mb-3">
+                                       This will clear all local data including:
+                                    </p>
+                                    <ul className="text-sm text-gray-400 space-y-1 ml-4">
+                                       <li>• All call records and transcriptions</li>
+                                       <li>• Training sessions and evaluations</li>
+                                       <li>• Conversation history and insights</li>
+                                       <li>• User preferences and settings</li>
+                                    </ul>
+                                    <p className="text-xs text-red-400 mt-3">
+                                       ⚠️ This action cannot be undone. The page will reload automatically.
+                                    </p>
+                                 </div>
+                                 
+                                 <Button 
+                                    onClick={handleClearStorage}
+                                    variant="destructive"
+                                    className="w-full sm:w-auto"
+                                 >
+                                    <Trash2 className="w-4 h-4 mr-2" />
+                                    Clear Local Storage
+                                 </Button>
+                              </div>
+                           </div>
+                        )}
+                     </div>
+                  </div>
+               </div>
+            </div>
+         )}
+      </div>
+    </div>
   );
 };

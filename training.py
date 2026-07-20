@@ -47,7 +47,7 @@ You are simulating an emergency call for a 911 dispatcher training. Your role is
 Begin the call now with your opening line. It should be urgent and give a key detail about the emergency.
     """
 
-    chat = client.chats.create(model="gemini-2.5-flash")
+    chat = client.chats.create(model="gemini-2.0-flash-exp")
     print("Starting simulated emergency call training...")
     print("Type your dispatcher responses. Type 'end session' to stop.\n")
 

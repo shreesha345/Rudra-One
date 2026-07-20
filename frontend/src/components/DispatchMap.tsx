@@ -87,7 +87,7 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/dark-v11',
+      style: 'mapbox://styles/mapbox/navigation-night-v1',
       center: [callerLongitude, callerLatitude],
       zoom: 12,
       attributionControl: false,
@@ -392,7 +392,7 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
   useEffect(() => {
     if (map.current) {
       const styleUrl = mapStyle === 'streets' 
-        ? 'mapbox://styles/mapbox/dark-v11'
+        ? 'mapbox://styles/mapbox/navigation-night-v1'
         : 'mapbox://styles/mapbox/satellite-streets-v12';
       
       // Store current routes data before style change
@@ -563,7 +563,7 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
               onClick={() => setMapStyle('streets')}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-all w-full ${
                 mapStyle === 'streets'
-                  ? 'bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] text-white'
+                  ? 'bg-[#5B5FED] hover:bg-[#4a4ec0] text-white'
                   : 'text-gray-300 hover:bg-[#2a2a2a]'
               }`}
             >
@@ -574,7 +574,7 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
               onClick={() => setMapStyle('satellite')}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-all border-t border-[#333333] w-full ${
                 mapStyle === 'satellite'
-                  ? 'bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] text-white'
+                  ? 'bg-[#5B5FED] hover:bg-[#4a4ec0] text-white'
                   : 'text-gray-300 hover:bg-[#2a2a2a]'
               }`}
             >

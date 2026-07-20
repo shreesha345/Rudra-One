@@ -301,7 +301,7 @@ export const MapView = ({
     if (map.current) {
       const styleUrl = mapStyle === 'streets' 
         ? 'mapbox://styles/mapbox/navigation-night-v1' // Dark navigation style
-        : 'mapbox://styles/mapbox/satellite-streets-v12'; // Satellite view
+        : 'mapbox://styles/mapbox/satellite-streets-v12'; // Satellite imagery
       
       map.current.setStyle(styleUrl);
     }
@@ -820,7 +820,7 @@ export const MapView = ({
               onClick={() => setMapStyle('streets')}
               className={`flex items-center gap-2 px-3 py-2 text-xs font-medium transition-all duration-200 w-full ${
                 mapStyle === 'streets' 
-                  ? 'bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] text-white shadow-lg' 
+                  ? 'bg-[#5B5FED] hover:bg-[#4a4ec0] text-white shadow-lg' 
                   : 'text-gray-300 hover:text-white hover:bg-[#2a2a2a]'
               }`}
             >
@@ -831,7 +831,7 @@ export const MapView = ({
               onClick={() => setMapStyle('satellite')}
               className={`flex items-center gap-2 px-3 py-2 text-xs font-medium transition-all duration-200 border-t border-[#333333] w-full ${
                 mapStyle === 'satellite' 
-                  ? 'bg-gradient-to-r from-[#fb923c] to-[#ea7b1a] text-white shadow-lg' 
+                  ? 'bg-[#5B5FED] hover:bg-[#4a4ec0] text-white shadow-lg' 
                   : 'text-gray-300 hover:text-white hover:bg-[#2a2a2a]'
               }`}
             >
@@ -844,7 +844,7 @@ export const MapView = ({
           <div className="bg-[#1a1a1a]/95 backdrop-blur-md rounded-xl border border-[#333333] shadow-xl overflow-hidden">
             <button
               onClick={handleZoomIn}
-              className="flex items-center justify-center w-11 h-11 text-gray-300 hover:text-white hover:bg-gradient-to-r hover:from-[#fb923c] hover:to-[#ea7b1a] transition-all duration-200"
+              className="flex items-center justify-center w-11 h-11 text-gray-300 hover:text-white hover:bg-[#5B5FED] transition-all duration-200"
               title="Zoom in"
             >
               <Plus className="w-5 h-5" />
@@ -854,7 +854,7 @@ export const MapView = ({
             </div>
             <button
               onClick={handleZoomOut}
-              className="flex items-center justify-center w-11 h-11 text-gray-300 hover:text-white hover:bg-gradient-to-r hover:from-[#fb923c] hover:to-[#ea7b1a] transition-all duration-200 border-t border-[#333333]"
+              className="flex items-center justify-center w-11 h-11 text-gray-300 hover:text-white hover:bg-[#5B5FED] transition-all duration-200 border-t border-[#333333]"
               title="Zoom out"
             >
               <Minus className="w-5 h-5" />

@@ -1,0 +1,27 @@
+[
+    {
+        "title": "Cardiac Arrest",
+        "desc": "Elderly male collapsed, not breathing.",
+        "twp": "123 Maple Ave, Springfield"
+    },
+    {
+        "title": "House Fire",
+        "desc": "Smoke coming from the basement window.",
+        "twp": "456 Oak St, Riverside"
+    },
+    {
+        "title": "Car Accident",
+        "desc": "Two car collision, one person trapped.",
+        "twp": "Intersection of Main St and 1st Ave"
+    },
+    {
+        "title": "Suspicious Person",
+        "desc": "Person looking into car windows in parking lot.",
+        "twp": "789 Pine Ln, Mall Parking Lot"
+    },
+    {
+        "title": "Domestic Disturbance",
+        "desc": "Loud arguing and breaking glass heard from neighbors apartment.",
+        "twp": "321 Elm St, Apt 4B"
+    }
+]
