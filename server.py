@@ -35,6 +35,8 @@ from google import genai
 from twilio_sms_send import send_emergency_alert, send_sms
 from database import init_db, get_db, AsyncSessionLocal
 from models import User, LoginLog, Call, Transcript, CallInsight, LocationData
+from rudra_logic import RudraAgent
+from elevenlabs_tts import text_to_speech_elevenlabs
 
 
 # Load environment variables
@@ -797,14 +799,79 @@ async def convert_and_queue_translated_audio(text: str, language_code: str, call
         logger.error(traceback.format_exc())
 
 
+async def convert_and_queue_ai_audio(text: str, language_code: str, caller_number: str):
+    """Convert AI text to speech using ElevenLabs and queue it for phone delivery"""
+    try:
+        # Generate speech using ElevenLabs
+        audio_mp3 = await text_to_speech_elevenlabs(text, language_code)
+        
+        if not audio_mp3:
+            logger.warning("Failed to generate AI audio, skipping")
+            return
+        
+        # Convert MP3 to PCM16 at 8kHz using pydub (Twilio format)
+        try:
+            from pydub import AudioSegment
+            import io
+            
+            # Load MP3 audio
+            audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_mp3))
+            
+            # Convert to 8kHz mono PCM16 (Twilio's native format)
+            audio_segment = audio_segment.set_frame_rate(8000).set_channels(1).set_sample_width(2)
+            
+            # Get raw PCM data
+            pcm_8khz = audio_segment.raw_data
+            
+            # Convert to μ-law for Twilio
+            ulaw_data = audioop.lin2ulaw(pcm_8khz, 2)
+            
+            # Split into 20ms chunks (160 bytes at 8kHz μ-law = 20ms)
+            chunk_size = 160
+            total_chunks = len(ulaw_data) // chunk_size
+            
+            logger.info(f"🤖 Queueing {total_chunks} AI audio chunks for {caller_number}")
+            
+            chunks_queued = 0
+            for i in range(0, len(ulaw_data), chunk_size):
+                chunk = ulaw_data[i:i + chunk_size]
+                
+                if len(chunk) == chunk_size:
+                    chunk_base64 = base64.b64encode(chunk).decode("utf-8")
+                    try:
+                        audio_to_phone.put_nowait(chunk_base64)
+                        chunks_queued += 1
+                    except Exception:
+                        # If queue full, try to make space
+                        try:
+                            audio_to_phone.get_nowait()
+                            audio_to_phone.put_nowait(chunk_base64)
+                            chunks_queued += 1
+                        except Exception:
+                            pass
+            
+            logger.info(f"✅ Queued {chunks_queued} AI audio chunks")
+                    
+        except ImportError:
+            logger.error("pydub not installed")
+        except Exception as e:
+            logger.error(f"Error converting AI audio: {e}")
+            
+    except Exception as e:
+        logger.error(f"Error in convert_and_queue_ai_audio: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+
 # --- Deepgram Realtime (direct WebSocket) transcriber ---
 # This does NOT require the Deepgram SDK. It connects directly to the Deepgram Realtime API.
 class DeepgramRealtimeTranscriber:
-    def __init__(self, speaker_label: str, caller_number: str, event_loop: asyncio.AbstractEventLoop = None, call_sid: str = None):
+    def __init__(self, speaker_label: str, caller_number: str, event_loop: asyncio.AbstractEventLoop = None, call_sid: str = None, rudra_agent: RudraAgent = None):
         self.speaker_label = speaker_label
         self.caller_number = caller_number
         self.call_sid = call_sid
         self.event_loop = event_loop or asyncio.get_event_loop()
+        self.rudra_agent = rudra_agent
         self.ws = None
         self.is_active = False
         self.full_transcript = []
@@ -1187,6 +1254,14 @@ class DeepgramRealtimeTranscriber:
                             self.handle_caller_translation(transcript, detected_lang), 
                             self.event_loop
                         )
+                    
+                    # Handle AI Agent logic
+                    if self.rudra_agent and not self.rudra_agent.call_transferred:
+                         if self.event_loop and self.event_loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                self.handle_ai_response(transcript),
+                                self.event_loop
+                            )
                 else:
                     # For interim results, broadcast normally
                     if self.event_loop and self.event_loop.is_running():
@@ -1261,6 +1336,58 @@ class DeepgramRealtimeTranscriber:
                 logger.info(f"📝 {self.speaker_label} transcript saved: {filepath}")
             except Exception as e:
                 logger.error(f"Failed to save transcript: {e}")
+
+    async def handle_ai_response(self, transcript: str):
+        """Handle AI Agent response generation"""
+        if not self.rudra_agent:
+            return
+
+        try:
+            # Run blocking agent logic in thread
+            response_text, transferred = await asyncio.to_thread(self.rudra_agent.process_input, transcript)
+            
+            if transferred:
+                logger.info("🚨 Call transferred to human dispatcher by AI Agent")
+                # Play transfer message
+                await convert_and_queue_ai_audio("I am transferring you to a human dispatcher now. Please hold.", "en", self.caller_number)
+                
+                # Broadcast transfer event to frontend
+                await self.broadcast_to_clients({
+                    "type": "ai_transfer",
+                    "call_sid": self.call_sid,
+                    "timestamp": datetime.now().isoformat(),
+                    "reason": "ai_decision"
+                })
+
+                # Stop AI agent from processing further
+                # The rudra_agent.call_transferred flag is already set, so subsequent calls will be ignored or return transferred=True
+                return
+
+            if response_text:
+                logger.info(f"🤖 AI Agent response: {response_text}")
+                
+                # Broadcast AI response to clients FIRST (before audio generation)
+                await self.broadcast_to_clients({
+                    "speaker": "AI Agent",
+                    "message": response_text,
+                    "timestamp": datetime.now().isoformat(),
+                    "caller_number": self.caller_number,
+                    "is_final": True,
+                    "type": "transcription",
+                    "language": "en",
+                    "translation_needed": False
+                })
+
+                # Save to database as AI response
+                if self.call_sid:
+                    asyncio.create_task(save_transcript_to_db(
+                        self.call_sid, "AI Agent", response_text, None, "en"
+                    ))
+                
+                # Then convert to speech and queue audio
+                await convert_and_queue_ai_audio(response_text, "en", self.caller_number)
+        except Exception as e:
+            logger.error(f"❌ Error in AI response handling: {e}")
 
 
 # Audio threads removed - all audio now routed through browser WebSocket
@@ -1800,7 +1927,7 @@ You are simulating an emergency call for a 911 dispatcher training. Your role is
 
 **CRITICAL INSTRUCTIONS FOR YOUR ROLE:**
 1.  **NO DESCRIPTIVE ACTIONS:** Do NOT use parentheses or asterisks to describe sounds, actions, or emotions (e.g., no `(sobbing)`, `*sirens wail*`, `(gasping)`).
-2.  **STRAIGHT CONVERSATION ONLY:** Your responses must only contain the words spoken by the caller. It should be a direct, back-and-forth conversation.
+2.     **STRAIGHT CONVERSATION ONLY:** Your responses must only contain the words spoken by the caller. It should be a direct, back-and-forth conversation.
 3.  **BE A DESCRIPTIVE REPORTER:** Act as a person urgently reporting an emergency. When you answer, provide relevant details about what you see, hear, and know. Your goal is to paint a clear picture of the scene with your words.
 4.  **ELABORATE WHEN ASKED:** Start with an urgent opening line. When the dispatcher asks a question, answer it fully. For example, if they ask for the location, don't just say "the train tracks." Say something like, "It's under the train tracks on Maple Avenue, just past the old factory." Provide the important details you have.
 
@@ -2405,14 +2532,41 @@ async def websocket_endpoint(websocket: WebSocket):
                         "browser_transcriber": browser_transcriber
                     }
                     
+                    # Initialize Rudra Agent for this call
+                    rudra_agent = RudraAgent()
+                    
                     # Phone transcriber for CALLER audio
-                    phone_transcriber = DeepgramRealtimeTranscriber("CALLER", caller_number, loop, call_sid)
+                    phone_transcriber = DeepgramRealtimeTranscriber("CALLER", caller_number, loop, call_sid, rudra_agent=rudra_agent)
                     asyncio.create_task(phone_transcriber.connect())
                     active_transcribers[call_sid] = {
                         "phone_transcriber": phone_transcriber
                     }
                     
                     logger.info("✅ LIVE transcription active (Browser + Phone)")
+                    
+                    # Initial greeting from AI Agent
+                    greeting = "112 Emergency Services, what is your emergency?"
+                    logger.info(f"🤖 AI Agent greeting: {greeting}")
+                    
+                    # Broadcast greeting to clients FIRST (before audio generation)
+                    await phone_transcriber.broadcast_to_clients({
+                        "speaker": "AI Agent",
+                        "message": greeting,
+                        "timestamp": datetime.now().isoformat(),
+                        "caller_number": caller_number,
+                        "is_final": True,
+                        "type": "transcription",
+                        "language": "en",
+                        "translation_needed": False
+                    })
+                    
+                    # Save greeting to DB
+                    asyncio.create_task(save_transcript_to_db(
+                        call_sid, "AI Agent", greeting, None, "en"
+                    ))
+                    
+                    # Then generate and queue audio
+                    await convert_and_queue_ai_audio(greeting, "en", caller_number)
                 else:
                     logger.warning("⚠️  Transcription disabled (no Deepgram API key)")
 
@@ -2814,6 +2968,28 @@ async def get_call_insights(call_sid: str, db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         logger.error(f"Error fetching insights for {call_sid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/calls/{call_sid}/takeover")
+async def takeover_call(call_sid: str):
+    """Stop AI agent and allow human dispatcher to take over - permanently disables AI"""
+    try:
+        logger.info(f"🛑 Takeover requested for call {call_sid}")
+        
+        if call_sid in active_transcribers:
+            transcriber = active_transcribers[call_sid].get("phone_transcriber")
+            if transcriber and transcriber.rudra_agent:
+                transcriber.rudra_agent.is_active = False
+                transcriber.rudra_agent.has_been_transferred = True  # Permanent flag
+                logger.info(f"✅ AI Agent permanently stopped for call {call_sid}")
+                return {"status": "success", "message": "AI Agent stopped"}
+        
+        logger.warning(f"⚠️ No active AI agent found for call {call_sid}")
+        return {"status": "success", "message": "No active AI agent found, but takeover acknowledged"}
+            
+    except Exception as e:
+        logger.error(f"Error taking over call {call_sid}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

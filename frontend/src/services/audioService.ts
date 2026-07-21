@@ -7,6 +7,7 @@ export class AudioService {
   
   // Audio playback - continuous stream with proper buffering
   private playbackContext: AudioContext | null = null;
+  private masterGainNode: GainNode | null = null;
   private playbackQueue: AudioBuffer[] = [];
   private isPlaying = false;
   private nextPlayTime = 0;
@@ -125,6 +126,11 @@ export class AudioService {
     if (!this.playbackContext) {
       // Use 48kHz for smooth playback (browser will resample from 16kHz)
       this.playbackContext = new AudioContext({ sampleRate: 48000 });
+      
+      // Create master gain node for global volume/mute control
+      this.masterGainNode = this.playbackContext.createGain();
+      this.masterGainNode.gain.value = 1.0;
+      this.masterGainNode.connect(this.playbackContext.destination);
       
       // Ensure AudioContext is running (required by browsers)
       if (this.playbackContext.state === 'suspended') {
@@ -252,7 +258,13 @@ export class AudioService {
       presenceBoost.connect(lowPassFilter);
       lowPassFilter.connect(gainNode);
       gainNode.connect(compressor);
-      compressor.connect(this.playbackContext.destination);
+      
+      // Connect to master gain node instead of destination
+      if (this.masterGainNode) {
+        compressor.connect(this.masterGainNode);
+      } else {
+        compressor.connect(this.playbackContext.destination);
+      }
 
       // Calculate precise start time (no gaps, no overlaps)
       const currentTime = this.playbackContext.currentTime;
@@ -318,6 +330,16 @@ export class AudioService {
     if (this.playbackContext) {
       this.playbackContext.close();
       this.playbackContext = null;
+    }
+  }
+
+  setMute(muted: boolean): void {
+    if (this.masterGainNode && this.playbackContext) {
+      // Smooth transition to avoid clicks
+      const currentTime = this.playbackContext.currentTime;
+      this.masterGainNode.gain.cancelScheduledValues(currentTime);
+      this.masterGainNode.gain.setTargetAtTime(muted ? 0 : 1, currentTime, 0.1);
+      console.log(muted ? '🔇 Audio muted' : '🔊 Audio unmuted');
     }
   }
 }

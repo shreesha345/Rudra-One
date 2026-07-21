@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 export interface TranscriptionMessage {
-  type: 'transcription' | 'connected' | 'keepalive' | 'call_started' | 'call_ended' | 'audio';
+  type: 'transcription' | 'connected' | 'keepalive' | 'call_started' | 'call_ended' | 'audio' | 'ai_transfer';
   speaker?: string;
   message?: string;
   timestamp: string;
@@ -10,6 +10,7 @@ export interface TranscriptionMessage {
   confidence?: number;
   call_sid?: string;
   audio?: string;  // Base64 encoded audio data
+  reason?: string;
 }
 
 interface UseWebSocketOptions {

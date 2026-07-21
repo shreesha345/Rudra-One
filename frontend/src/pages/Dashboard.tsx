@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { Phone, Plus, Search, Bell, User, ChevronDown, Share2, Sparkles, Copy, Volume2, MapPin, FileText, Play, GripVertical, Radio, BarChart3, GraduationCap, Compass, Settings, Send, Mic, MicOff, CheckCircle, XCircle, AlertCircle, Info, MessageSquare, Ambulance, Shield, Flame, Loader2, LayoutDashboard, Archive, MoreHorizontal, Clock, Filter, RefreshCw, Save, Languages, Trash2, Menu, X, ChevronLeft, ChevronRight, History, Globe, ArrowRight, Tag, LineChart, Award } from "lucide-react";
+import { Phone, Plus, Search, Bell, User, ChevronDown, Share2, Sparkles, Copy, Volume2, VolumeX, MapPin, FileText, Play, GripVertical, Radio, BarChart3, GraduationCap, Compass, Settings, Send, Mic, MicOff, CheckCircle, XCircle, AlertCircle, Info, MessageSquare, Ambulance, Shield, Flame, Loader2, LayoutDashboard, Archive, MoreHorizontal, Clock, Filter, RefreshCw, Save, Languages, Trash2, Menu, X, ChevronLeft, ChevronRight, History, Globe, ArrowRight, Tag, LineChart, Award } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -195,6 +195,13 @@ export const Dashboard = () => {
   const [savingSettings, setSavingSettings] = useState(false);
   const [isSettingsSidebarOpen, setIsSettingsSidebarOpen] = useState(true);
   const [activeSettingsSection, setActiveSettingsSection] = useState<'call-forwarding' | 'language' | 'database'>('call-forwarding');
+
+  // AI Agent state
+  const [isAiActive, setIsAiActive] = useState(true); // Track if AI agent is active
+  const [hasBeenTransferred, setHasBeenTransferred] = useState(false); // Track if call has been transferred to human
+  const [isCallerMuted, setIsCallerMuted] = useState(true); // Track if caller audio is muted
+  const [forwardingNumber, setForwardingNumber] = useState("");
+  const [isForwardingEnabled, setIsForwardingEnabled] = useState(false);
 
   // Load settings on mount and when window regains focus
   useEffect(() => {
@@ -992,8 +999,6 @@ export const Dashboard = () => {
     ? apiService.getWebSocketUrl(`/client/${selectedCallerNumber}`)
     : '';
 
-
-
   const { isConnected: transcriptionConnected, sendMessage } = useWebSocket({
     url: transcriptionUrl,
     autoReconnect: isLiveCall, // Only auto-reconnect for live calls
@@ -1037,6 +1042,18 @@ export const Dashboard = () => {
         } catch (error) {
           console.error('❌ Failed to play audio:', error);
         }
+        return;
+      }
+
+      // Handle AI transfer event
+      if (message.type === 'ai_transfer') {
+        console.log('🚨 AI Transfer event received:', message.reason);
+        setIsAiActive(false);
+        toast({
+          title: "Call Transferred",
+          description: "AI Agent has transferred the call to you.",
+          variant: "default",
+        });
         return;
       }
 
@@ -1980,8 +1997,6 @@ export const Dashboard = () => {
           variant: "destructive",
         });
       } else if (event.error === 'no-speech') {
-        // Don't show error for no-speech, just log it
-        console.log('⏳ No speech detected, will restart automatically...');
       } else if (event.error === 'network') {
         console.log('🌐 Network error, will retry...');
       } else {
@@ -2517,6 +2532,7 @@ export const Dashboard = () => {
       setSelectedCallerNumber(null);
       setConversation([]);
       setIsLiveCall(false);
+      setHasBeenTransferred(false); // Reset transfer flag when deselecting
       console.log('Call deselected, showing map view');
       return;
     }
@@ -2525,6 +2541,12 @@ export const Dashboard = () => {
     const call = calls[idx];
     setDetectedLanguage(call.language);
     setIsLiveCall(call.isLive);
+    
+    // Reset AI state for new calls
+    if (call.isLive) {
+      setIsAiActive(true); // AI starts active for new live calls
+      setHasBeenTransferred(false); // Reset transfer flag for new calls
+    }
 
     if (call.call_sid) {
       setSelectedCallSid(call.call_sid);
@@ -2826,6 +2848,46 @@ export const Dashboard = () => {
   };
 
 
+  const handleTakeover = async () => {
+    if (!selectedCallSid) return;
+    
+    try {
+      const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_BASE_URL}/api/calls/${selectedCallSid}/takeover`, {
+        method: 'POST',
+      });
+      
+      if (response.ok) {
+        setIsAiActive(false);
+        setHasBeenTransferred(true); // Mark as transferred - AI cannot be re-enabled
+        toast({
+          title: "Call Taken Over",
+          description: "AI Agent stopped. You can now speak to the caller.",
+        });
+        // Automatically enable microphone
+        if (!isMicActive) {
+          toggleMicrophone();
+        }
+      } else {
+        throw new Error('Failed to take over call');
+      }
+    } catch (error) {
+      console.error('Error taking over call:', error);
+      toast({
+        title: "Error",
+        description: "Failed to take over call",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Sync mute state with AudioService
+  useEffect(() => {
+    if (audioServiceRef.current) {
+      audioServiceRef.current.setMute(isCallerMuted);
+    }
+  }, [isCallerMuted]);
+
   return (
     <div className="flex flex-col h-screen bg-[#0a0a0a] text-white font-sans overflow-hidden">
       <style dangerouslySetInnerHTML={{
@@ -3064,7 +3126,7 @@ export const Dashboard = () => {
                </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar min-h-0">
                <div className="text-center text-xs text-gray-500 mb-8">
                   {calls[selectedIncident]?.date || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} | {calls[selectedIncident]?.time || new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}
                </div>
@@ -3075,10 +3137,10 @@ export const Dashboard = () => {
                </div>
 
                {conversation.map((msg, idx) => (
-                  <div key={idx} className={`flex ${msg.sender === 'Dispatch' ? 'justify-end' : 'justify-start'}`}>
+                  <div key={idx} className={`flex ${msg.sender === 'Dispatch' || msg.sender === 'AI Agent' ? 'justify-end' : 'justify-start'}`}>
                      <div className="max-w-[80%]">
                         <div className={`text-[10px] text-gray-500 mb-1 flex items-center gap-2 ${
-                           msg.sender === 'Dispatch' ? 'justify-end' : 'justify-start'
+                           msg.sender === 'Dispatch' || msg.sender === 'AI Agent' ? 'justify-end' : 'justify-start'
                         }`}>
                            <span>{msg.sender} | {msg.time}</span>
                            {msg.isTranslated && (
@@ -3088,7 +3150,7 @@ export const Dashboard = () => {
                            )}
                         </div>
                         <div className={`rounded-2xl text-sm ${
-                           msg.sender === 'Dispatch' 
+                           msg.sender === 'Dispatch' || msg.sender === 'AI Agent'
                               ? 'bg-[#1a1a1a] border border-[#333] rounded-tr-sm' 
                               : 'bg-[#1a1a1a] border border-[#333] rounded-tl-sm'
                         }`}>
@@ -3107,7 +3169,8 @@ export const Dashboard = () => {
                               </>
                            ) : (
                               <div className={`p-3 ${
-                                 msg.sender === 'Dispatch' ? 'text-gray-300' : 'text-white'
+                                 msg.sender === 'Dispatch' ? 'text-gray-300' : 
+                                 msg.sender === 'AI Agent' ? 'text-gray-400 italic' : 'text-white'
                               }`}>
                                  {msg.message}
                               </div>
@@ -3136,7 +3199,7 @@ export const Dashboard = () => {
 
                         {/* Question Content */}
                         <div className="flex-1">
-                           <div className="flex items-center gap-2 mb-1">
+                           <div className="flex items-center justify-between mb-1">
                               <span className="text-[9px] text-gray-400 uppercase tracking-wide">Suggested Question</span>
                               {protocolQuestions.filter(q => !q.isAsked)[0]?.isPredefined ? (
                                  <span className="text-[8px] bg-orange-500/20 text-orange-400 px-1.5 py-0.5 rounded uppercase font-medium">Essential</span>
@@ -3154,7 +3217,7 @@ export const Dashboard = () => {
                               <span className="text-[10px] text-gray-600">•</span>
                               <button 
                                  onClick={() => setActiveTab('guidance')}
-                                 className="text-[10px] text-[#5B5FED] hover:text-[#4a4ec0] transition-colors"
+                                 className="text-[10px] text-[#5B5FED] hover:text-[#7b7ff0] transition-colors"
                               >
                                  {protocolQuestions.filter(q => !q.isAsked).length - 1} more questions →
                               </button>
@@ -3165,32 +3228,61 @@ export const Dashboard = () => {
                </div>
             )}
 
-            {/* Microphone Button for Live Calls */}
+            {/* Controls for Live Calls */}
             {isLiveCall && (
-               <div className="px-6 py-3 border-t border-[#2a2a2a] bg-[#0a0a0a] shrink-0">
-                  <Button
-                     onClick={toggleMicrophone}
-                     disabled={!isLiveCall}
-                     variant="outline"
-                     size="sm"
-                     className={`h-8 text-xs font-medium transition-all ${
-                        isMicActive
-                           ? 'bg-red-500/10 border-red-500 text-red-400 hover:bg-red-500/20'
-                           : 'bg-[#1a1a1a] border-[#333] text-gray-300 hover:bg-[#252525] hover:text-white'
-                     }`}
-                  >
-                     {isMicActive ? (
-                        <>
-                           <MicOff className="w-3 h-3 mr-1.5" />
-                           Stop Talking
-                        </>
+               <div className="px-6 py-2.5 border-b border-[#2a2a2a] bg-[#0f0f0f] shrink-0">
+                  <div className="mt-3 flex items-center gap-2">
+                     {/* Mute/Unmute Caller Button */}
+                     <button
+                        onClick={() => setIsCallerMuted(!isCallerMuted)}
+                        className="p-2 rounded-lg transition-all border border-[#333] hover:bg-[#252525]"
+                        title={isCallerMuted ? "Unmute Caller" : "Mute Caller"}
+                     >
+                        {isCallerMuted ? (
+                           <VolumeX className="w-4 h-4 text-red-400" />
+                        ) : (
+                           <Volume2 className="w-4 h-4 text-gray-300" />
+                        )}
+                     </button>
+
+                     {/* Take Over Call Button (when AI is active) */}
+                     {isAiActive ? (
+                        <Button
+                           onClick={handleTakeover}
+                           variant="outline"
+                           size="sm"
+                           className="h-8 text-xs font-medium transition-all bg-orange-500/10 border-orange-500 text-orange-400 hover:bg-orange-500/20 flex-1"
+                        >
+                           Take Over Call
+                           <ArrowRight className="w-4 h-4 ml-1.5" style={{ transform: 'rotate(15deg)' }} />
+                        </Button>
                      ) : (
-                        <>
-                           <Mic className="w-3 h-3 mr-1.5" />
-                           Talk
-                        </>
+                        /* Talk Button (when human has control) */
+                        <Button
+                           onClick={toggleMicrophone}
+                           disabled={!isLiveCall}
+                           variant="outline"
+                           size="sm"
+                           className={`h-8 text-xs font-medium transition-all px-3 ${
+                              isMicActive
+                                 ? 'bg-red-500/10 border-red-500 text-red-400 hover:bg-red-500/20'
+                                 : 'bg-[#1a1a1a] border-[#333] text-gray-300 hover:bg-[#252525] hover:text-white'
+                           }`}
+                        >
+                           {isMicActive ? (
+                              <>
+                                 <MicOff className="w-4 h-4 mr-1.5" />
+                                 Mute
+                              </>
+                           ) : (
+                              <>
+                                 <Mic className="w-4 h-4 mr-1.5" />
+                                 Talk
+                              </>
+                           )}
+                        </Button>
                      )}
-                  </Button>
+                  </div>
                </div>
             )}
          </main>
@@ -3303,10 +3395,21 @@ export const Dashboard = () => {
                      </div>
                   )}
                   {activeTab === 'guidance' && (
+                     isAiActive ? (
+                        <div className="flex flex-col items-center justify-center h-full text-center p-6">
+                           <div className="w-12 h-12 rounded-full bg-[#5B5FED]/10 flex items-center justify-center mb-4">
+                              <Sparkles className="w-6 h-6 text-[#5B5FED]" />
+                           </div>
+                           <h3 className="text-sm font-medium text-white mb-2">AI Agent Active</h3>
+                           <p className="text-xs text-gray-500 max-w-[200px]">
+                              Protocol suggestions are hidden while the AI agent is handling the call. Take over to view guidance.
+                           </p>
+                        </div>
+                     ) : (
                      <div className="space-y-4">
                         <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
                            <div className="flex items-center justify-between mb-3">
-                              <h3 className="text-xs font-bold text-gray-400 uppercase">Protocol Questions</h3>
+                              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide">Protocol Questions</h3>
                               {isGeneratingQuestions && (
                                  <span className="text-xs text-[#5B5FED] flex items-center gap-1">
                                     <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -3359,6 +3462,7 @@ export const Dashboard = () => {
                            )}
                         </div>
                      </div>
+                     )
                   )}
                   {activeTab === 'overview' && (
                      <div className="space-y-4">
@@ -3490,727 +3594,8 @@ export const Dashboard = () => {
                </div>
             </div>
          </aside>
+         
          </>
-         )}
-
-         {/* View: Dispatch (Map) */}
-         {activeNavItem === 'dispatch' && (
-            <div className="flex-1 relative flex">
-               <div className="flex-1 relative">
-               <div className="absolute top-4 left-4 z-10 bg-[#1a1a1a]/90 backdrop-blur border border-[#333] p-4 rounded-lg shadow-lg w-80">
-                  <h3 className="text-white font-semibold mb-3">Dispatch Resources</h3>
-                  <div className="grid grid-cols-3 gap-2 mb-4">
-                     <button
-                        onClick={() => setDispatchEmergencyType('hospital')}
-                        className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                           dispatchEmergencyType === 'hospital'
-                           ? 'border-[#3b82f6] bg-[#3b82f6]/10 text-[#3b82f6]'
-                           : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#3b82f6]/50 hover:text-[#3b82f6]'
-                        }`}
-                     >
-                        <Ambulance className="w-6 h-6 mb-1" />
-                        <span className="text-xs font-medium">Hospital</span>
-                     </button>
-                     <button
-                        onClick={() => setDispatchEmergencyType('police')}
-                        className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                           dispatchEmergencyType === 'police'
-                           ? 'border-[#22c55e] bg-[#22c55e]/10 text-[#22c55e]'
-                           : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#22c55e]/50 hover:text-[#22c55e]'
-                        }`}
-                     >
-                        <Shield className="w-6 h-6 mb-1" />
-                        <span className="text-xs font-medium">Police</span>
-                     </button>
-                     <button
-                        onClick={() => setDispatchEmergencyType('fire')}
-                        className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                           dispatchEmergencyType === 'fire'
-                           ? 'border-[#ef4444] bg-[#ef4444]/10 text-[#ef4444]'
-                           : 'border-[#333333] bg-[#2a2a2a] text-gray-400 hover:border-[#ef4444]/50 hover:text-[#ef4444]'
-                        }`}
-                     >
-                        <Flame className="w-6 h-6 mb-1" />
-                        <span className="text-xs font-medium">Fire</span>
-                     </button>
-                  </div>
-                  <Button
-                     onClick={async () => {
-                        if (dispatchMapRef.current) {
-                           setIsSearchingStations(true);
-                           try {
-                              await dispatchMapRef.current.searchNearestStations();
-                           } finally {
-                              setIsSearchingStations(false);
-                           }
-                        }
-                     }}
-                     disabled={isSearchingStations}
-                     className="w-full bg-[#5B5FED] hover:bg-[#4a4ec0] text-white font-semibold py-2 rounded-lg transition-all shadow-lg"
-                  >
-                     {isSearchingStations ? (
-                        <>
-                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                           Searching...
-                        </>
-                     ) : (
-                        <>
-                           <Search className="w-4 h-4 mr-2" />
-                           Find Nearest Stations
-                        </>
-                     )}
-                  </Button>
-               </div>
-               <DispatchMap 
-                  ref={dispatchMapRef}
-                  callerLatitude={mapLocation.latitude}
-                  callerLongitude={mapLocation.longitude}
-                  callerAddress={mapLocation.address}
-                  selectedType={dispatchEmergencyType}
-                  onStationsFound={(stations) => setDispatchStations(stations)}
-               />
-               </div>
-
-               {/* Stations List Panel */}
-               {dispatchStations.length > 0 && (
-                  <aside className="w-96 border-l border-[#2a2a2a] bg-[#0a0a0a] flex flex-col">
-                     <div className="p-4 border-b border-[#2a2a2a]">
-                        <h3 className="text-white font-semibold mb-1">Nearest Stations</h3>
-                        <p className="text-xs text-gray-400">{dispatchStations.length} stations found</p>
-                     </div>
-                     <div className="flex-1 overflow-y-auto">
-                        {dispatchStations.map((station, idx) => (
-                           <div 
-                              key={station.id}
-                              className="p-4 border-b border-[#2a2a2a] hover:bg-[#1a1a1a] transition-colors cursor-pointer"
-                              onClick={() => dispatchMapRef.current?.flyToStation(station)}
-                           >
-                              <div className="flex items-start justify-between mb-2">
-                                 <div className="flex-1">
-                                    <div className="flex items-center gap-2 mb-1">
-                                       <div className={`w-2 h-2 rounded-full ${
-                                          station.type === 'hospital' ? 'bg-[#3b82f6]' :
-                                          station.type === 'police' ? 'bg-[#22c55e]' :
-                                          'bg-[#ef4444]'
-                                       }`}></div>
-                                       <h4 className="text-white font-medium text-sm">{station.name}</h4>
-                                    </div>
-                                    <p className="text-xs text-gray-400 mb-1">{station.address}</p>
-                                    <div className="flex items-center gap-3 text-xs text-gray-500">
-                                       <span>📍 {station.distance.toFixed(2)} km</span>
-                                       {station.duration && <span>🕐 {station.duration}</span>}
-                                    </div>
-                                 </div>
-                                 <div className="text-lg font-bold text-gray-600">#{idx + 1}</div>
-                              </div>
-                              <div className="flex gap-2 mt-3">
-                                 <Button
-                                    size="sm"
-                                    onClick={(e) => {
-                                       e.stopPropagation();
-                                       handleEmergencySMS(station);
-                                    }}
-                                    className="flex-1 bg-[#5B5FED] hover:bg-[#4a4ec0] text-white text-xs"
-                                 >
-                                    <MessageSquare className="w-3 h-3 mr-1" />
-                                    SMS
-                                 </Button>
-                                 <Button
-                                    size="sm"
-                                    onClick={(e) => {
-                                       e.stopPropagation();
-                                       handleEmergencyCall(station);
-                                    }}
-                                    className="flex-1 bg-[#5B5FED] hover:bg-[#4a4ec0] text-white text-xs"
-                                 >
-                                    <Phone className="w-3 h-3 mr-1" />
-                                    Call
-                                 </Button>
-                              </div>
-                           </div>
-                        ))}
-                     </div>
-                  </aside>
-               )}
-            </div>
-         )}
-
-         {/* View: Analytics */}
-         {activeNavItem === 'analytics' && (
-            <div className="flex h-full w-full bg-[#0f1117] text-white font-sans overflow-hidden">
-              {/* Sidebar */}
-              <div className="w-64 flex flex-col border-r border-gray-800 bg-[#0f1117] p-4">
-                <div className="mb-8">
-                   {/* Sidebar Header if needed */}
-                </div>
-                
-                <nav className="space-y-2">
-                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800 bg-gray-800/50 text-white">
-                    <Sparkles className="mr-2 h-4 w-4" />
-                    Ask Prepared
-                  </Button>
-                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
-                    <LayoutDashboard className="mr-2 h-4 w-4" />
-                    Dashboards
-                  </Button>
-                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
-                    <Flame className="mr-2 h-4 w-4" />
-                    Incidents
-                  </Button>
-                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
-                    <BarChart3 className="mr-2 h-4 w-4" />
-                    Usage
-                  </Button>
-                  <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
-                    <History className="mr-2 h-4 w-4" />
-                    Audit Logs
-                  </Button>
-                </nav>
-              </div>
-
-              {/* Main Content */}
-              <div className="flex-1 flex flex-col items-center justify-center p-8 relative">
-                
-                {/* Logo Section */}
-                <div className="flex items-center gap-3 mb-8">
-                  <img 
-                    src="/image-removebg-preview (10).png" 
-                    alt="Prepared Logo" 
-                    className="h-40 w-auto"
-                  />
-                </div>
-
-                {/* Search Bar Section */}
-                <div className="w-full max-w-2xl relative mb-8">
-                  <div className="relative flex items-center bg-[#1a1d24] rounded-xl border border-gray-700 p-2 shadow-lg">
-                    <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full bg-gray-700/50 text-gray-400 hover:text-white mr-2">
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                    
-                    <div className="flex items-center bg-gray-800/50 rounded-full px-3 py-1 mr-2">
-                      <Globe className="h-3 w-3 text-gray-400 mr-2" />
-                      <span className="text-xs text-gray-300">Search</span>
-                    </div>
-
-                    <input 
-                      type="text" 
-                      placeholder="Which incident types scored lower than 70% i"
-                      className="flex-1 bg-transparent border-none outline-none text-gray-300 placeholder-gray-500 text-sm h-10"
-                    />
-
-                    <Button size="icon" className="h-8 w-8 rounded-full bg-[#e87c46] hover:bg-[#d66a35] text-white ml-2">
-                      <ArrowRight className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Quick Action Cards */}
-                <div className="flex flex-wrap justify-center gap-4">
-                  <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
-                    <Phone className="h-4 w-4 text-gray-400" />
-                    YTD Total Call Volume
-                  </Button>
-                  <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
-                    <Tag className="h-4 w-4 text-gray-400" />
-                    Top 10 Call Tags
-                  </Button>
-                  <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
-                    <LineChart className="h-4 w-4 text-gray-400" />
-                    Average QA Scores
-                  </Button>
-                  <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
-                    <Award className="h-4 w-4 text-gray-400" />
-                    Highest-Performing Staff
-                  </Button>
-                </div>
-
-              </div>
-            </div>
-         )}
-
-         {/* View: Training */}
-         {activeNavItem === 'training' && (
-            <>
-            {/* Left Sidebar: Training Sessions */}
-            <aside className="w-80 border-r border-[#2a2a2a] flex flex-col bg-[#0a0a0a]">
-               <div className="p-4 border-b border-[#2a2a2a]">
-                  <div className="flex items-center justify-between mb-4">
-                     <div className="text-sm font-medium text-gray-400 flex items-center gap-1">Training Sessions</div>
-                     <Button 
-                        size="icon" 
-                        className="h-8 w-8 bg-[#5B5FED] hover:bg-[#4a4ec0] rounded-md"
-                        onClick={handleStartTraining}
-                        disabled={isTrainingInProgress}
-                     >
-                        {isTrainingInProgress ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-5 h-5" />}
-                     </Button>
-                  </div>
-                  <div className="relative mb-3">
-                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-                     <Input placeholder="Search Sessions" className="pl-9 bg-[#1a1a1a] border-[#333] text-sm h-9 text-white placeholder:text-gray-600 focus-visible:ring-1 focus-visible:ring-[#5B5FED]" />
-                  </div>
-               </div>
-               
-               <div className="flex-1 overflow-y-auto custom-scrollbar">
-                  {trainingLogs.length === 0 ? (
-                     <div className="p-8 text-center text-gray-500 text-sm">
-                        No training sessions yet. Start a new scenario to begin.
-                     </div>
-                  ) : (
-                     trainingLogs.map((log, idx) => (
-                        <div 
-                           key={idx}
-                           onClick={() => {
-                              setActiveTrainingSession(log.session_id);
-                              if (log.conversation) setTrainingConversation(log.conversation);
-                           }}
-                           className={`p-3 border-b border-[#1a1a2a] cursor-pointer hover:bg-[#1a1a1a] transition-colors relative ${
-                              activeTrainingSession === log.session_id ? 'bg-gradient-to-r from-[#1a1a1a] to-[#1e1e2e]' : ''
-                           }`}
-                        >
-                           {activeTrainingSession === log.session_id && <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#5B5FED]"></div>}
-                           <div className="flex items-start gap-3">
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                                 log.status === 'completed' ? 'bg-green-900/30 text-green-400' : 
-                                 log.status === 'error' ? 'bg-red-900/30 text-red-400' : 
-                                 'bg-blue-900/30 text-blue-400'
-                              }`}>
-                                 <GraduationCap className="w-4 h-4" />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                 <div className="flex items-center justify-between mb-1">
-                                    <span className={`text-sm font-medium truncate ${activeTrainingSession === log.session_id ? 'text-white' : 'text-gray-300'}`}>{log.scenario}</span>
-                                    <div className="text-xs text-gray-500 flex flex-col items-end">
-                                       <span>{log.duration || log.time}</span>
-                                    </div>
-                                 </div>
-                                 <div className="flex items-center gap-2">
-                                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                                       log.status === 'active' ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' : 'bg-gray-800/50 border-gray-700 text-gray-400'
-                                    }`}>
-                                       {log.status.toUpperCase()}
-                                    </span>
-                                 </div>
-                              </div>
-                           </div>
-                        </div>
-                     ))
-                  )}
-               </div>
-            </aside>
-
-            {/* Center Panel: Training Chat */}
-            <main className="flex-1 flex flex-col bg-[#0a0a0a] relative min-w-0">
-               {activeTrainingSession ? (
-                  <>
-                     <div className="h-16 border-b border-[#2a2a2a] flex items-center justify-between px-6 shrink-0">
-                        <div className="flex items-center gap-4">
-                           <div>
-                              <h2 className="text-lg font-semibold text-white">Training Simulation</h2>
-                              <div className="flex items-center gap-2 text-xs text-gray-500">
-                                 <span className={`${
-                                    isTrainingInProgress ? 'text-[#5B5FED]' : 'text-gray-500'
-                                 }`}>
-                                    {isTrainingInProgress ? 'Active Scenario' : 'Scenario Ended'}
-                                 </span>
-                                 <span className="w-1 h-1 rounded-full bg-gray-600"></span>
-                                 <div className="flex items-center gap-1 text-gray-400 bg-[#1a1a1a] px-2 py-0.5 rounded border border-[#333]">
-                                    {trainingLogs.find(l => l.session_id === activeTrainingSession)?.scenario || "Unknown Scenario"}
-                                 </div>
-                                 {isTrainingInProgress && trainingStartTime && (
-                                    <>
-                                       <span className="w-1 h-1 rounded-full bg-gray-600"></span>
-                                       <span className="text-gray-400 font-mono">
-                                          <Clock className="w-3 h-3 inline mr-1" />
-                                          <TrainingTimer startTime={trainingStartTime} />
-                                       </span>
-                                    </>
-                                 )}
-                              </div>
-                           </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                           <Button 
-                              variant={isTrainingInProgress ? "destructive" : "secondary"} 
-                              size="sm" 
-                              className={`${
-                                 isTrainingInProgress 
-                                    ? "bg-red-900/20 text-red-400 hover:bg-red-900/40 border border-red-900/50" 
-                                    : "bg-gray-800 text-gray-400 border border-gray-700 cursor-not-allowed"
-                              }`}
-                              onClick={handleStopTraining}
-                              disabled={!isTrainingInProgress}
-                           >
-                              {isTrainingInProgress ? "Stop Training" : "Session Ended"}
-                           </Button>
-                        </div>
-                     </div>
-
-                     <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
-                        <div className="flex justify-center mb-6">
-                           <div className="flex items-center gap-2 text-xs text-gray-500">
-                              <Play className="w-3 h-3" /> Simulation Started
-                           </div>
-                        </div>
-               
-                        {trainingConversation.map((msg, idx) => (
-                           <div key={idx} className={`flex ${msg.sender === 'Dispatch' ? 'justify-end' : 'justify-start'}`}>
-                              <div className={`max-w-[80%] ${msg.sender === 'Dispatch' ? 'items-end' : 'items-start'} flex flex-col`}>
-                                 <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-xs font-medium text-gray-400">{msg.sender}</span>
-                                    <span className="text-[10px] text-gray-600">{msg.time}</span>
-                                 </div>
-                                 <div className={`p-3 text-sm ${
-                                    msg.sender === 'Dispatch' 
-                                       ? 'bg-[#1a1a1a] border border-[#333] rounded-tr-sm text-gray-300' 
-                                       : 'bg-[#1a1a1a] border border-[#333] rounded-tl-sm text-white'
-                                 }`}>
-                                    {msg.message}
-                                 </div>
-                              </div>
-                           </div>
-                        ))}
-                        <div ref={conversationEndRef} />
-                     </div>
-                     
-                     {/* Input Area */}
-                     {isTrainingInProgress ? (
-                        <div className="p-4 border-t border-[#2a2a2a] bg-[#0a0a0a]">
-                           {/* Suggested Question Display */}
-                           {activeTrainingSession && protocolManagerRef.current?.getSession(activeTrainingSession) && (
-                              (() => {
-                                 const unansweredQuestions = protocolManagerRef.current!.getUnansweredQuestions(activeTrainingSession);
-                                 const nextQuestion = unansweredQuestions[0];
-                                 
-                                 return nextQuestion && !messageText ? (
-                                    <div className="mb-3 p-3 bg-[#1a1a1a] border border-[#333] rounded-lg">
-                                       <div className="flex items-start gap-2">
-                                          <Sparkles className="w-4 h-4 text-[#5B5FED] mt-0.5 shrink-0" />
-                                          <div className="flex-1">
-                                             <p className="text-xs text-gray-400 mb-1">Suggested Question:</p>
-                                             <button
-                                                onClick={() => setMessageText(nextQuestion.question)}
-                                                className="text-sm text-gray-300 hover:text-white text-left w-full transition-colors"
-                                             >
-                                                {nextQuestion.question}
-                                             </button>
-                                          </div>
-                                          <button
-                                             onClick={() => setMessageText(nextQuestion.question)}
-                                             className="text-xs text-[#5B5FED] hover:text-[#7b7ff0] shrink-0"
-                                          >
-                                             Use this →
-                                          </button>
-                                       </div>
-                                    </div>
-                                 ) : null;
-                              })()
-                           )}
-                           
-                           <div className="flex items-center gap-2">
-                              <Button
-                                 variant="ghost"
-                                 size="icon"
-                                 className={`h-10 w-10 rounded-full transition-all ${
-                                    isMicActive 
-                                       ? 'bg-red-500/20 text-red-500 hover:bg-red-500/30' 
-                                       : 'bg-[#1a1a1a] text-gray-400 hover:text-white hover:bg-[#2a2a2a]'
-                                 }`}
-                                 onClick={toggleMicrophone}
-                              >
-                                 {isMicActive ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-                              </Button>
-                              <div className="flex-1 relative">
-                                 <Input
-                                    value={messageText}
-                                    onChange={(e) => setMessageText(e.target.value)}
-                                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendMessage()}
-                                    placeholder={isMicActive ? "Listening... Speak now" : "Type your response..."}
-                                    className="bg-[#1a1a1a] border-[#333] text-white placeholder:text-gray-600 focus-visible:ring-[#5B5FED]"
-                                 />
-                                 {isMicActive && (
-                                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                                       <div className="flex items-center gap-1">
-                                          <div className="w-1 h-3 bg-red-500 rounded-full animate-pulse" style={{ animationDelay: '0ms' }}></div>
-                                          <div className="w-1 h-4 bg-red-500 rounded-full animate-pulse" style={{ animationDelay: '150ms' }}></div>
-                                          <div className="w-1 h-3 bg-red-500 rounded-full animate-pulse" style={{ animationDelay: '300ms' }}></div>
-                                       </div>
-                                    </div>
-                                 )}
-                              </div>
-                              <Button 
-                                 onClick={handleSendMessage}
-                                 disabled={!messageText.trim()}
-                                 className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white"
-                              >
-                                 <Send className="w-4 h-4" />
-                              </Button>
-                           </div>
-                        </div>
-                     ) : (
-                        <div className="p-4 border-t border-[#2a2a2a] bg-[#0a0a0a]">
-                           <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333] text-center">
-                              <p className="text-sm text-gray-500">Training session has ended. View the Evaluation tab for your performance review.</p>
-                           </div>
-                        </div>
-                     )}
-                  </>
-               ) : (
-                  <div className="flex-1 flex flex-col items-center justify-center text-gray-500">
-                     <GraduationCap className="w-16 h-16 mb-4 opacity-20" />
-                     <p className="mb-4">Select a session or start a new scenario</p>
-                     <Button 
-                        onClick={handleStartTraining}
-                        disabled={isTrainingInProgress}
-                        className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white"
-                     >
-                        {isTrainingInProgress ? (
-                           <>
-                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                              Starting...
-                           </>
-                        ) : (
-                           <>
-                              <Play className="w-4 h-4 mr-2" />
-                              Start New Scenario
-                           </>
-                        )}
-                     </Button>
-                  </div>
-               )}
-            </main>
-
-            {/* Right Panel: Training Insights */}
-            <aside 
-               style={{ width: rightWidth }}
-               className="border-l border-[#2a2a2a] flex flex-col bg-[#0a0a0a] relative overflow-hidden"
-            >
-               {/* Resize Handle */}
-               <div
-                  className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[#5B5FED]/50 z-50 transition-colors"
-                  onMouseDown={(e) => {
-                     e.preventDefault();
-                     setIsResizingRight(true);
-                  }}
-               />
-               
-               <div className="flex-1 flex flex-col min-h-0">
-                  <div className="flex border-b border-[#2a2a2a] shrink-0">
-                     {['Insights', 'Evaluation', 'Location', 'Guidance'].map(tab => (
-                        <button 
-                           key={tab}
-                           onClick={() => setActiveTab(tab.toLowerCase())}
-                           className={`flex-1 py-3 text-xs font-medium border-b-2 transition-colors ${
-                              activeTab === tab.toLowerCase() ? 'border-[#5B5FED] text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
-                           }`}
-                        >
-                           {tab}
-                        </button>
-                     ))}
-                  </div>
-                  <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
-                     <div className="p-4">
-                     {/* Tab Content */}
-                     {activeTab === 'guidance' && (
-                        <div className="space-y-4">
-                           {activeTrainingSession ? (
-                              <>
-                                 <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
-                                    <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Suggested Questions</h3>
-                                    <p className="text-xs text-gray-500 mb-3">AI-generated questions based on the conversation</p>
-                                    {protocolManagerRef.current?.getSession(activeTrainingSession) ? (
-                                       <div className="space-y-3">
-                                          {/* Loading State */}
-                                          {isGeneratingQuestions && (
-                                             <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
-                                                <Loader2 className="w-4 h-4 animate-spin text-[#5B5FED]" />
-                                                <span>Analyzing conversation and generating suggestions...</span>
-                                             </div>
-                                          )}
-
-                                          {/* Unanswered Questions */}
-                                          {protocolManagerRef.current.getUnansweredQuestions(activeTrainingSession).length > 0 && (
-                                             <div>
-                                                <h4 className="text-xs font-semibold text-[#5B5FED] mb-2">Questions to Ask:</h4>
-                                                <ul className="space-y-2">
-                                                   {protocolManagerRef.current.getUnansweredQuestions(activeTrainingSession).map((q) => (
-                                                      <li key={q.id} className="flex items-start gap-2 text-sm">
-                                                         <span className="text-yellow-500 mt-0.5">❓</span>
-                                                         <span className="text-gray-300">{q.question}</span>
-                                                      </li>
-                                                   ))}
-                                                </ul>
-                                             </div>
-                                          )}
-
-                                          {/* Answered Questions */}
-                                          {protocolManagerRef.current.getAnsweredQuestions(activeTrainingSession).length > 0 && (
-                                             <div>
-                                                <h4 className="text-xs font-semibold text-green-400 mb-2">Questions Covered:</h4>
-                                                <ul className="space-y-2">
-                                                   {protocolManagerRef.current.getAnsweredQuestions(activeTrainingSession).map((q) => (
-                                                      <li key={q.id} className="flex items-start gap-2 text-sm">
-                                                         <span className="text-green-500 mt-0.5">✓</span>
-                                                         <span className="text-gray-500 line-through">{q.question}</span>
-                                                      </li>
-                                                   ))}
-                                                </ul>
-                                             </div>
-                                          )}
-
-                                          {/* Empty State */}
-                                          {!isGeneratingQuestions && 
-                                           protocolManagerRef.current.getUnansweredQuestions(activeTrainingSession).length === 0 && 
-                                           protocolManagerRef.current.getAnsweredQuestions(activeTrainingSession).length === 0 && (
-                                             <p className="text-sm text-gray-500 text-center py-4">Start the conversation to see AI-generated suggestions</p>
-                                          )}
-
-                                          {/* Completion Progress */}
-                                          {(protocolManagerRef.current.getUnansweredQuestions(activeTrainingSession).length > 0 || 
-                                            protocolManagerRef.current.getAnsweredQuestions(activeTrainingSession).length > 0) && (
-                                             <div className="pt-3 border-t border-[#333]">
-                                                <div className="flex items-center justify-between mb-2">
-                                                   <span className="text-xs text-gray-400">Protocol Completion</span>
-                                                   <span className="text-xs font-bold text-[#5B5FED]">
-                                                      {protocolManagerRef.current.getCompletionPercentage(activeTrainingSession)}%
-                                                   </span>
-                                                </div>
-                                                <div className="w-full h-2 bg-[#0a0a0a] rounded-full overflow-hidden">
-                                                   <div 
-                                                      className="h-full bg-gradient-to-r from-[#5B5FED] to-[#7b7ff0] transition-all duration-500"
-                                                      style={{ width: `${protocolManagerRef.current.getCompletionPercentage(activeTrainingSession)}%` }}
-                                                   />
-                                                </div>
-                                             </div>
-                                          )}
-                                       </div>
-                                    ) : (
-                                       <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
-                                          <Loader2 className="w-4 h-4 animate-spin text-[#5B5FED]" />
-                                          <span>Initializing protocol assistant...</span>
-                                       </div>
-                                    )}
-                                 </div>
-
-                                 <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
-                                    <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Best Practices</h3>
-                                    <ul className="space-y-2 text-sm text-gray-300">
-                                       <li className="flex items-start gap-2">
-                                          <span className="text-[#5B5FED]">•</span>
-                                          <span>Listen actively and acknowledge what the caller says</span>
-                                       </li>
-                                       <li className="flex items-start gap-2">
-                                          <span className="text-[#5B5FED]">•</span>
-                                          <span>Ask follow-up questions based on their responses</span>
-                                       </li>
-                                       <li className="flex items-start gap-2">
-                                          <span className="text-[#5B5FED]">•</span>
-                                          <span>Verify exact location and cross-streets if possible</span>
-                                       </li>
-                                       <li className="flex items-start gap-2">
-                                          <span className="text-[#5B5FED]">•</span>
-                                          <span>Stay calm, speak clearly, and reassure the caller</span>
-                                       </li>
-                                    </ul>
-                                 </div>
-                              </>
-                           ) : (
-                              <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333] text-center">
-                                 <p className="text-sm text-gray-500">Start a training session to receive AI-powered guidance.</p>
-                              </div>
-                           )}
-                        </div>
-                     )}
-                     {activeTab === 'location' && (
-                        <div className="h-[600px] w-full bg-[#1a1a1a] rounded-lg overflow-hidden relative">
-                           <MapView 
-                              latitude={mapLocation.latitude} 
-                              longitude={mapLocation.longitude} 
-                           />
-                        </div>
-                     )}
-                     {activeTab === 'insights' && (
-                        <div className="space-y-4">
-                           {/* Training Insights - Extracted Information */}
-                           {activeTrainingSession && trainingInsights && (
-                              <>
-                                 {trainingInsights.summary && (
-                                    <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
-                                       <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Call Summary</h3>
-                                       <p className="text-sm text-gray-300">{trainingInsights.summary}</p>
-                                    </div>
-                                 )}
-
-                                 {trainingInsights.persons_described && trainingInsights.persons_described.length > 0 && (
-                                    <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
-                                       <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Persons Involved</h3>
-                                       <ul className="space-y-1">
-                                          {trainingInsights.persons_described.map((person, idx) => (
-                                             <li key={idx} className="text-sm text-gray-300 flex items-start gap-2">
-                                                <span className="text-[#5B5FED] mt-1">•</span>
-                                                <span>{typeof person === 'string' ? person : `${person.name} (${person.role})`}</span>
-                                             </li>
-                                          ))}
-                                       </ul>
-                                    </div>
-                                 )}
-
-                                 {trainingInsights.location && trainingInsights.location.length > 0 && (
-                                    <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
-                                       <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Location Details</h3>
-                                       <p className="text-sm text-gray-300">{trainingInsights.location.join(', ')}</p>
-                                    </div>
-                                 )}
-
-                                 {trainingInsights.incident && Object.keys(trainingInsights.incident).length > 0 && (
-                                    <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333]">
-                                       <h3 className="text-xs font-bold text-gray-400 mb-2 uppercase">Incident Details</h3>
-                                       <div className="space-y-2">
-                                          {Object.entries(trainingInsights.incident).map(([key, value]) => (
-                                             <div key={key} className="text-sm">
-                                                <span className="text-gray-500">{key}:</span>
-                                                <span className="text-gray-300 ml-2">{String(value)}</span>
-                                             </div>
-                                          ))}
-                                       </div>
-                                    </div>
-                                 )}
-                              </>
-                           )}
-                        </div>
-                     )}
-                     {activeTab === 'evaluation' && (
-                        <div className="space-y-4">
-                           {trainingEvaluation ? (
-                              <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333] animate-in fade-in slide-in-from-bottom-4 duration-500">
-                                 <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-xs font-bold text-[#5B5FED] uppercase">Performance Evaluation</h3>
-                                    {trainingConfidence && (
-                                       <span className={`text-xs font-bold px-2 py-1 rounded ${
-                                          trainingConfidence > 80 ? 'bg-green-900/30 text-green-400' : 
-                                          trainingConfidence > 60 ? 'bg-yellow-900/30 text-yellow-400' : 
-                                          'bg-red-900/30 text-red-400'
-                                       }`}>
-                                          Score: {trainingConfidence}%
-                                       </span>
-                                    )}
-                                 </div>
-                                 <div className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-strong:text-white prose-p:text-gray-300">
-                                    <ReactMarkdown>{trainingEvaluation}</ReactMarkdown>
-                                 </div>
-                              </div>
-                           ) : (
-                              <div className="bg-[#1a1a1a] p-4 rounded-lg border border-[#333] text-center">
-                                 <p className="text-sm text-gray-500">Complete a training session to view your evaluation.</p>
-                              </div>
-                           )}
-                        </div>
-                     )}
-                     </div>
-                  </div>
-               </div>
-            </aside>
-            </>
          )}
 
          {/* View: Settings */}
@@ -4274,16 +3659,17 @@ export const Dashboard = () => {
                                  <ChevronRight className="w-4 h-4 text-gray-400" />
                               )}
                            </button>
-                           <div>
-                              <h2 className="text-2xl font-bold text-white">Settings</h2>
-                              <p className="text-sm text-gray-400">Manage your agency settings and preferences</p>
-                           </div>
+                           <h2 className="text-xl font-semibold text-white">
+                              {activeSettingsSection === 'call-forwarding' && 'Call Forwarding'}
+                              {activeSettingsSection === 'language' && 'Language Settings'}
+                              {activeSettingsSection === 'database' && 'Database Management'}
+                           </h2>
                         </div>
                      </div>
                   </div>
 
-                  <div className="p-8">
-                     <div className="max-w-4xl mx-auto">
+                  <div className="p-6 max-w-4xl mx-auto">
+                     <div className="space-y-6">
                         {/* Call Forwarding Section */}
                         {activeSettingsSection === 'call-forwarding' && (
                            <div className="bg-[#1a1a1a] border border-gray-800 rounded-lg p-6">
@@ -4293,25 +3679,33 @@ export const Dashboard = () => {
                                  </div>
                                  <div>
                                     <h3 className="text-lg font-semibold text-white">Call Forwarding</h3>
-                                    <p className="text-sm text-gray-400">Forward incoming calls to another number</p>
+                                    <p className="text-sm text-gray-400">Manage call forwarding settings for your agency</p>
                                  </div>
                               </div>
                               
                               <div className="space-y-4">
-                                 <div>
-                                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                                       Forward To Phone Number
-                                    </label>
-                                    <input
-                                       type="tel"
-                                       placeholder="+1234567890"
+                                 <div className="grid gap-2">
+                                    <label className="text-sm font-medium text-gray-300">Forwarding Number</label>
+                                    <Input 
                                        value={callForwardNumber}
                                        onChange={(e) => setCallForwardNumber(e.target.value)}
-                                       className="w-full px-4 py-2.5 bg-[#0a0a0a] border border-gray-700 rounded-lg text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#5B5FED] focus:border-transparent"
+                                       placeholder="+1234567890"
+                                       className="bg-[#0a0a0a] border-gray-800 text-white"
                                     />
-                                    <p className="text-xs text-gray-500 mt-2">
-                                       Leave empty to disable. Use international format (e.g., +91 for India)
-                                    </p>
+                                    <p className="text-xs text-gray-500">Enter the phone number to forward calls to (e.g., +1234567890)</p>
+                                 </div>
+                                 
+                                 <div className="flex items-center justify-between bg-[#0a0a0a] p-4 rounded-lg border border-gray-800">
+                                    <div className="space-y-0.5">
+                                       <label className="text-sm font-medium text-white">Enable Forwarding</label>
+                                       <p className="text-xs text-gray-500">Automatically forward incoming calls</p>
+                                    </div>
+                                    <div 
+                                       className={`w-12 h-6 rounded-full p-1 cursor-pointer transition-colors ${isForwardingEnabled ? 'bg-[#5B5FED]' : 'bg-gray-700'}`}
+                                       onClick={() => setIsForwardingEnabled(!isForwardingEnabled)}
+                                    >
+                                       <div className={`w-4 h-4 rounded-full bg-white transition-transform ${isForwardingEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
+                                    </div>
                                  </div>
                                  
                                  <Button 
@@ -4327,7 +3721,7 @@ export const Dashboard = () => {
                                     ) : (
                                        <>
                                           <Save className="w-4 h-4 mr-2" />
-                                          Save Call Forwarding
+                                          Save Settings
                                        </>
                                     )}
                                  </Button>
@@ -4335,7 +3729,7 @@ export const Dashboard = () => {
                            </div>
                         )}
 
-                        {/* Default Language Section */}
+                        {/* Language Settings Section */}
                         {activeSettingsSection === 'language' && (
                            <div className="bg-[#1a1a1a] border border-gray-800 rounded-lg p-6">
                               <div className="flex items-center gap-3 mb-6">
@@ -4343,35 +3737,28 @@ export const Dashboard = () => {
                                     <Languages className="w-5 h-5 text-[#5B5FED]" />
                                  </div>
                                  <div>
-                                    <h3 className="text-lg font-semibold text-white">Default Translation Language</h3>
-                                    <p className="text-sm text-gray-400">Set your preferred translation language</p>
+                                    <h3 className="text-lg font-semibold text-white">Language Preferences</h3>
+                                    <p className="text-sm text-gray-400">Set the default language for the dashboard</p>
                                  </div>
                               </div>
                               
                               <div className="space-y-4">
-                                 <div>
-                                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                                       Default Language
-                                    </label>
-                                    <select 
-                                       value={defaultLanguage}
-                                       onChange={(e) => setDefaultLanguage(e.target.value)}
-                                       className="w-full px-4 py-2.5 bg-[#0a0a0a] border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-[#5B5FED] focus:border-transparent"
-                                    >
-                                       <option value="en">English</option>
-                                       <option value="hi">Hindi (हिन्दी)</option>
-                                       <option value="bn">Bengali (বাংলা)</option>
-                                       <option value="te">Telugu (తెలుగు)</option>
-                                       <option value="mr">Marathi (मराठी)</option>
-                                       <option value="ta">Tamil (தமிழ்)</option>
-                                       <option value="gu">Gujarati (ગુજરાતી)</option>
-                                       <option value="kn">Kannada (ಕನ್ನಡ)</option>
-                                       <option value="ml">Malayalam (മലയാളം)</option>
-                                       <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
-                                       <option value="or">Odia (ଓଡ଼ିଆ)</option>
-                                    </select>
-                                    <p className="text-xs text-gray-500 mt-2">
-                                       This will be used as the default target language for real-time translation
+                                 <div className="grid gap-2">
+                                    <label className="text-sm font-medium text-gray-300">Default Language</label>
+                                    <Select value={defaultLanguage} onValueChange={setDefaultLanguage}>
+                                       <SelectTrigger className="bg-[#0a0a0a] border-gray-800 text-white">
+                                          <SelectValue placeholder="Select language" />
+                                       </SelectTrigger>
+                                       <SelectContent className="bg-[#1a1a1a] border-gray-800 text-white">
+                                          <SelectItem value="english">English</SelectItem>
+                                          <SelectItem value="spanish">Spanish</SelectItem>
+                                          <SelectItem value="french">French</SelectItem>
+                                          <SelectItem value="german">German</SelectItem>
+                                          <SelectItem value="hindi">Hindi</SelectItem>
+                                       </SelectContent>
+                                    </Select>
+                                    <p className="text-xs text-gray-500">
+                                       This language will be selected by default when the dashboard loads.
                                     </p>
                                  </div>
                                  
