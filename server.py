@@ -12,7 +12,7 @@ import wave
 import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, status, Depends
 from fastapi.responses import Response, JSONResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -25,12 +25,16 @@ from typing import Dict, Set, Optional
 from pydantic import BaseModel, Field, validator
 import websockets
 import traceback
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
 
 # Import training functions
 from training import load_scenarios, select_random_scenario
 from google import genai
 # Import SMS service
-from twilio_sms_send import send_emergency_alert
+from twilio_sms_send import send_emergency_alert, send_sms
+from database import init_db, get_db, AsyncSessionLocal
+from models import User, LoginLog, Call, Transcript, CallInsight, LocationData
 
 
 # Load environment variables
@@ -49,9 +53,9 @@ logger = logging.getLogger(__name__)
 
 # Environment variables with validation
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-TWILIO_ACCOUNT_SID = os.getenv("VITE_TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("VITE_TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.getenv("VITE_TWILIO_PHONE_NUMBER")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID") or os.getenv("VITE_TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN") or os.getenv("VITE_TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER") or os.getenv("VITE_TWILIO_PHONE_NUMBER")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 PORT = int(os.getenv("PORT", "8000"))
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -101,6 +105,51 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting server (Browser-only audio mode)...")
     logger.info("📱 All audio will be routed through web browser")
     
+    # Initialize database
+    try:
+        await init_db()
+        logger.info("✅ Database initialized")
+        
+        # Seed default user
+        # We need to manually get a session since we are not in a request context
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(User).where(User.username == "Shreesha"))
+            user = result.scalar_one_or_none()
+            if not user:
+                new_user = User(username="Shreesha", password="Shreesha123admin")
+                session.add(new_user)
+                await session.commit()
+                logger.info("✅ Default user seeded")
+            
+            # Fix any calls stuck in live state (from previous server crashes)
+            result = await session.execute(
+                select(Call).where(Call.is_live == True)
+            )
+            stuck_calls = result.scalars().all()
+            if stuck_calls:
+                logger.info(f"🔧 Found {len(stuck_calls)} calls stuck in live state, fixing...")
+                for call in stuck_calls:
+                    call.is_live = False
+                    if not call.end_time:
+                        # Use timezone-aware datetime if start_time is timezone-aware
+                        if call.start_time and call.start_time.tzinfo:
+                            from datetime import timezone
+                            call.end_time = datetime.now(timezone.utc)
+                        else:
+                            call.end_time = datetime.now()
+                    if call.start_time and call.end_time and not call.duration:
+                        try:
+                            duration = (call.end_time - call.start_time).total_seconds()
+                            call.duration = int(duration)
+                        except TypeError:
+                            # If timezone mismatch, just set a default duration
+                            call.duration = 0
+                await session.commit()
+                logger.info(f"✅ Fixed {len(stuck_calls)} stuck calls")
+    except Exception as e:
+        logger.error(f"⚠️ Failed to initialize database: {e}")
+
     # Initialize training system
     global training_scenarios, training_client
     try:
@@ -130,6 +179,14 @@ async def lifespan(app: FastAPI):
         WS_URL = f"wss://{domain}/ws" if not domain.startswith("localhost") else f"ws://{domain}/ws"
         app.state.ws_url = WS_URL
         app.state.domain = domain
+        
+        # Set public URL for frontend
+        if domain.startswith("localhost"):
+             app.state.public_url = f"http://{domain}"
+        elif not domain.startswith("http"):
+             app.state.public_url = f"https://{domain}"
+        else:
+             app.state.public_url = domain
         
         # Update Twilio webhook
         if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
@@ -305,7 +362,7 @@ class EmergencyCallResponse(BaseModel):
     call_message: Optional[str] = None
 
 
-class LocationData(BaseModel):
+class LocationDataRequest(BaseModel):
     latitude: float
     longitude: float
     accuracy: float
@@ -315,6 +372,9 @@ class LocationData(BaseModel):
 class AgencySettings(BaseModel):
     call_forward_number: Optional[str] = Field(None, description="Phone number to forward calls to")
     default_translation_language: str = Field("en", description="Default language for translation (ISO 639-1 code)")
+    emergency_hospital: Optional[str] = Field(None, description="Emergency contact for Hospital")
+    emergency_police: Optional[str] = Field(None, description="Emergency contact for Police")
+    emergency_fire: Optional[str] = Field(None, description="Emergency contact for Fire")
     
     @validator('default_translation_language')
     def validate_language_code(cls, v):
@@ -329,6 +389,11 @@ class SettingsResponse(BaseModel):
     status: str
     message: str
     settings: Optional[dict] = None
+
+
+class SMSRequest(BaseModel):
+    to: str
+    body: str
 
 
 
@@ -735,9 +800,10 @@ async def convert_and_queue_translated_audio(text: str, language_code: str, call
 # --- Deepgram Realtime (direct WebSocket) transcriber ---
 # This does NOT require the Deepgram SDK. It connects directly to the Deepgram Realtime API.
 class DeepgramRealtimeTranscriber:
-    def __init__(self, speaker_label: str, caller_number: str, event_loop: asyncio.AbstractEventLoop = None):
+    def __init__(self, speaker_label: str, caller_number: str, event_loop: asyncio.AbstractEventLoop = None, call_sid: str = None):
         self.speaker_label = speaker_label
         self.caller_number = caller_number
+        self.call_sid = call_sid
         self.event_loop = event_loop or asyncio.get_event_loop()
         self.ws = None
         self.is_active = False
@@ -825,6 +891,12 @@ class DeepgramRealtimeTranscriber:
                     "language": dispatcher_lang,
                     "translation_needed": False
                 })
+                
+                # Save to database
+                if self.call_sid:
+                    asyncio.create_task(save_transcript_to_db(
+                        self.call_sid, "Dispatch", transcript, None, dispatcher_lang
+                    ))
                 return
             
             # Languages differ - translation needed
@@ -850,6 +922,12 @@ class DeepgramRealtimeTranscriber:
                         "target_language": caller_lang,
                         "translation_needed": True
                     })
+                    
+                    # Save to database
+                    if self.call_sid:
+                        asyncio.create_task(save_transcript_to_db(
+                            self.call_sid, "Dispatch", transcript, translated_text, dispatcher_lang
+                        ))
                     
                     # Convert translated text to speech in caller's language and queue for phone
                     logger.info(f"🎤 Starting TTS for translated text in {caller_lang}: {translated_text[:50]}...")
@@ -926,6 +1004,12 @@ class DeepgramRealtimeTranscriber:
                     "language": caller_lang,
                     "translation_needed": False
                 })
+                
+                # Save to database
+                if self.call_sid:
+                    asyncio.create_task(save_transcript_to_db(
+                        self.call_sid, "Caller", transcript, None, caller_lang
+                    ))
                 return
 
             # Translation needed (Caller -> Dispatcher)
@@ -947,6 +1031,12 @@ class DeepgramRealtimeTranscriber:
                     "target_language": dispatcher_lang,
                     "translation_needed": True
                 })
+                
+                # Save to database
+                if self.call_sid:
+                    asyncio.create_task(save_transcript_to_db(
+                        self.call_sid, "Caller", transcript, translated_text, caller_lang
+                    ))
             else:
                 # Translation failed or same
                 await self.broadcast_to_clients({
@@ -959,6 +1049,12 @@ class DeepgramRealtimeTranscriber:
                     "language": caller_lang,
                     "translation_needed": False
                 })
+                
+                # Save to database
+                if self.call_sid:
+                    asyncio.create_task(save_transcript_to_db(
+                        self.call_sid, "Caller", transcript, None, caller_lang
+                    ))
 
         except Exception as e:
             logger.error(f"❌ Error in caller translation: {e}")
@@ -1170,6 +1266,137 @@ class DeepgramRealtimeTranscriber:
 # Audio threads removed - all audio now routed through browser WebSocket
 
 
+# Database helper functions
+async def save_transcript_to_db(call_sid: str, speaker: str, message: str, translated_message: str = None, language: str = None):
+    """Save transcript to database"""
+    try:
+        async with AsyncSessionLocal() as db:
+            transcript = Transcript(
+                call_sid=call_sid,
+                speaker=speaker,
+                message=message,
+                translated_message=translated_message,
+                language=language,
+                is_final=True
+            )
+            db.add(transcript)
+            await db.commit()
+            logger.info(f"💾 Saved transcript for {call_sid}: {speaker}")
+    except Exception as e:
+        logger.error(f"Error saving transcript to DB: {e}")
+
+
+async def save_or_update_insights_to_db(call_sid: str, insights_data: dict):
+    """Save or update call insights to database"""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(CallInsight).where(CallInsight.call_sid == call_sid)
+            )
+            existing = result.scalar_one_or_none()
+            
+            if existing:
+                # Update existing
+                existing.summary = insights_data.get('summary', '')
+                existing.location = insights_data.get('location', [])
+                existing.persons_described = insights_data.get('persons_described', [])
+                existing.additional_info = insights_data.get('additional_info', [])
+                existing.incident = insights_data.get('incident', {})
+                existing.time_info = insights_data.get('time_info', {})
+                existing.protocol_questions = insights_data.get('protocol_questions', [])
+            else:
+                # Create new
+                insight = CallInsight(
+                    call_sid=call_sid,
+                    summary=insights_data.get('summary', ''),
+                    location=insights_data.get('location', []),
+                    persons_described=insights_data.get('persons_described', []),
+                    additional_info=insights_data.get('additional_info', []),
+                    incident=insights_data.get('incident', {}),
+                    time_info=insights_data.get('time_info', {}),
+                    protocol_questions=insights_data.get('protocol_questions', [])
+                )
+                db.add(insight)
+            
+            await db.commit()
+            logger.info(f"💾 Saved insights for {call_sid}")
+    except Exception as e:
+        logger.error(f"Error saving insights to DB: {e}")
+
+
+async def save_location_to_db(call_sid: str, caller_number: str, latitude: float, longitude: float, address: str = None):
+    """Save location data to database"""
+    try:
+        async with AsyncSessionLocal() as db:
+            location = LocationData(
+                call_sid=call_sid,
+                caller_number=caller_number,
+                latitude=latitude,
+                longitude=longitude,
+                address=address
+            )
+            db.add(location)
+            await db.commit()
+            logger.info(f"💾 Saved location for {call_sid}: {address}")
+    except Exception as e:
+        logger.error(f"Error saving location to DB: {e}")
+
+
+async def mark_call_ended(call_sid: str):
+    """Mark a call as ended in the database"""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Call).where(Call.call_sid == call_sid)
+            )
+            call = result.scalar_one_or_none()
+            
+            if call:
+                call.is_live = False
+                
+                # Handle timezone-aware datetimes correctly
+                if call.start_time and call.start_time.tzinfo:
+                    from datetime import timezone
+                    call.end_time = datetime.now(timezone.utc)
+                else:
+                    call.end_time = datetime.now()
+                
+                if call.start_time and call.end_time:
+                    try:
+                        duration = (call.end_time - call.start_time).total_seconds()
+                        call.duration = int(duration)
+                    except TypeError:
+                        # Fallback if timezones still mismatch
+                        call.duration = 0
+                        logger.warning(f"Timezone mismatch calculating duration for {call_sid}")
+                
+                await db.commit()
+                logger.info(f"💾 Marked call {call_sid} as ended")
+    except Exception as e:
+        logger.error(f"Error marking call as ended: {e}")
+
+
+# Root endpoint
+@app.get("/")
+async def root(request: Request):
+    """Root endpoint returning public URL info"""
+    public_url = getattr(request.app.state, 'public_url', None)
+    
+    # Fallback if not set in state
+    if not public_url:
+        public_url = NGROK_URL or f"http://localhost:{PORT}"
+        if public_url and not public_url.startswith("http"):
+             public_url = f"https://{public_url}"
+    
+    logger.info(f"🌐 Root endpoint called. Returning public_url: {public_url}")
+             
+    return {
+        "status": "online",
+        "service": "RudraOne API",
+        "public_url": public_url
+    }
+
+
 # Health check endpoint
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -1182,6 +1409,39 @@ async def health_check():
         twilio_configured=bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN)
     )
 
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/login")
+async def login(request: Request, login_data: LoginRequest, db: AsyncSession = Depends(get_db)):
+    # Log attempt
+    ip = request.client.host
+    user_agent = request.headers.get("user-agent")
+    
+    # Check credentials
+    result = await db.execute(select(User).where(User.username == login_data.username))
+    user = result.scalar_one_or_none()
+    
+    success = False
+    if user and user.password == login_data.password:
+        success = True
+    
+    # Save log
+    log = LoginLog(
+        username=login_data.username,
+        ip_address=ip,
+        user_agent=user_agent,
+        success=success
+    )
+    db.add(log)
+    await db.commit()
+    
+    if success:
+        return {"message": "Login successful", "agent_id": user.username}
+    else:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @app.get("/")
 async def root(request: Request):
@@ -1227,11 +1487,15 @@ async def websocket_status():
 
 
 @app.post("/twiml")
-async def twiml_endpoint(request: Request):
+async def twiml_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
     """Twilio webhook endpoint for incoming calls"""
     try:
         form_data = await request.form()
         From = form_data.get("From")
+        # Fallback to query params if From is not in form data (e.g. for testing scripts)
+        if not From:
+            From = request.query_params.get("caller_number")
+            
         To = form_data.get("To")
         CallSid = form_data.get("CallSid")
         CallerName = form_data.get("CallerName")
@@ -1253,12 +1517,70 @@ async def twiml_endpoint(request: Request):
             }
             logger.info(f"📞 Incoming call: {From} -> {To}")
 
+            # Initialize caller language from settings
+            try:
+                settings = load_settings()
+                default_lang = settings.get("default_translation_language", "en")
+                caller_languages[From] = default_lang
+                logger.info(f"🌍 Initialized caller language for {From} to {default_lang}")
+            except Exception as e:
+                logger.error(f"Error initializing caller language: {e}")
+            
+            # Save call to database
+            try:
+                # First, ensure any previous live calls from this number are marked as ended
+                # This prevents "stuck" calls if the server missed a previous hangup event
+                result = await db.execute(
+                    select(Call).where(
+                        Call.caller_number == From,
+                        Call.is_live == True
+                    )
+                )
+                existing_live_calls = result.scalars().all()
+                for old_call in existing_live_calls:
+                    logger.warning(f"⚠️ Found stuck live call {old_call.call_sid} from {From}, marking as ended")
+                    old_call.is_live = False
+                    if not old_call.end_time:
+                        # Handle timezone-aware datetimes correctly
+                        if old_call.start_time and old_call.start_time.tzinfo:
+                            from datetime import timezone
+                            old_call.end_time = datetime.now(timezone.utc)
+                        else:
+                            old_call.end_time = datetime.now()
+                    
+                    if old_call.start_time and old_call.end_time and not old_call.duration:
+                        try:
+                            duration = (old_call.end_time - old_call.start_time).total_seconds()
+                            old_call.duration = int(duration)
+                        except TypeError:
+                            old_call.duration = 0
+                
+                new_call = Call(
+                    call_sid=CallSid,
+                    caller_number=From,
+                    to_number=To,
+                    caller_name=CallerName,
+                    caller_city=CallerCity,
+                    caller_state=CallerState,
+                    caller_country=CallerCountry,
+                    language="English",
+                    is_live=True
+                )
+                db.add(new_call)
+                await db.commit()
+                logger.info(f"✅ Call {CallSid} saved to database")
+            except Exception as e:
+                logger.error(f"Error saving call to database: {e}")
+                await db.rollback()
+
+
         ws_url = getattr(request.app.state, 'ws_url', WS_URL)
         xml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
         <Response>
           <Connect>
             <Stream url="{ws_url}">
               <Parameter name="track" value="both_tracks" />
+              <Parameter name="caller_number" value="{From}" />
             </Stream>
           </Connect>
         </Response>"""
@@ -1415,7 +1737,10 @@ async def stream_audio_from_browser(request: AudioStreamRequest):
                 except Exception as e:
                     logger.error(f"Error streaming to browser transcriber: {e}")
         else:
-            logger.warning(f"⚠️ No browser transcriber found for {caller_number}. Available: {list(browser_transcribers.keys())}")
+            # Only log if we have an active call (not after cleanup)
+            # Check if there are ANY active sessions to avoid spam after call ends
+            if sessions:
+                logger.debug(f"No browser transcriber for {caller_number} (call may have ended)")
         
         return {"status": "success", "message": "Audio queued and transcribed"}
     except ValueError as e:
@@ -1725,11 +2050,45 @@ async def get_location_page():
 
 
 @app.post("/location")
-async def receive_location(data: LocationData):
+async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends(get_db)):
     """Receive location data from the client"""
     logger.info(f"📍 Received location: Lat={data.latitude}, Lon={data.longitude}, Acc={data.accuracy}, Caller={data.caller_number}")
     
+    # Find the call_sid for this caller - first check active sessions
+    call_sid = None
+    for sid, session in sessions.items():
+        if session.get("caller_number") == data.caller_number:
+            call_sid = sid
+            logger.info(f"📍 Found call_sid in active sessions: {call_sid}")
+            break
+    
+    # If not found in sessions, check database for most recent call from this number
+    if not call_sid:
+        try:
+            result = await db.execute(
+                select(Call)
+                .where(Call.caller_number == data.caller_number)
+                .order_by(Call.start_time.desc())
+                .limit(1)
+            )
+            recent_call = result.scalars().first()
+            if recent_call:
+                call_sid = recent_call.call_sid
+                logger.info(f"📍 Found call_sid in database: {call_sid}")
+        except Exception as e:
+            logger.error(f"Error finding call in database: {e}")
+    
+    if not call_sid:
+        logger.warning(f"⚠️ No call_sid found for caller {data.caller_number}")
+    
+    # Save location to database
+    if call_sid and data.caller_number:
+        asyncio.create_task(save_location_to_db(
+            call_sid, data.caller_number, data.latitude, data.longitude, None
+        ))
+    
     # Broadcast to all connected notification clients (dashboard)
+    logger.info(f"📍 Broadcasting location to {len(notification_clients)} clients")
     for client in notification_clients:
         try:
             await client.send_json({
@@ -1738,14 +2097,16 @@ async def receive_location(data: LocationData):
                     "latitude": data.latitude,
                     "longitude": data.longitude,
                     "accuracy": data.accuracy,
-                    "caller_number": data.caller_number
+                    "caller_number": data.caller_number,
+                    "call_sid": call_sid  # Include call_sid in the message
                 },
                 "timestamp": datetime.now().isoformat()
             })
+            logger.info(f"📍 Location sent to client with call_sid: {call_sid}")
         except Exception as e:
             logger.error(f"Failed to send location to client: {e}")
             
-    return {"status": "success", "message": "Location received"}
+    return {"status": "success", "message": "Location received", "call_sid": call_sid}
 
 
 @app.post("/sms/emergency", response_model=EmergencySMSResponse)
@@ -1998,12 +2359,22 @@ async def websocket_endpoint(websocket: WebSocket):
             if message["event"] == "start":
                 call_sid = message["start"]["callSid"]
                 stream_sid = message["start"]["streamSid"]
+                custom_params = message["start"].get("customParameters", {})
 
                 caller_number = "unknown"
-                if call_sid in sessions:
+                # Try to get caller number from custom parameters first (most reliable)
+                if "caller_number" in custom_params:
+                    caller_number = custom_params["caller_number"]
+                # Fallback to session lookup
+                elif call_sid in sessions:
                     caller_number = sessions[call_sid].get("caller_number", "unknown")
+                
+                if call_sid in sessions:
                     sessions[call_sid]["active"] = True
                     sessions[call_sid]["stream_sid"] = stream_sid
+                    # Update caller number in session if we found it from params
+                    if caller_number != "unknown":
+                        sessions[call_sid]["caller_number"] = caller_number
                 else:
                     sessions[call_sid] = {"active": True, "stream_sid": stream_sid, "caller_number": caller_number}
 
@@ -2028,14 +2399,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     loop = asyncio.get_event_loop()
                     
                     # Browser transcriber for DISPATCH/CONTROL_ROOM audio
-                    browser_transcriber = DeepgramRealtimeTranscriber("DISPATCH", caller_number, loop)
+                    browser_transcriber = DeepgramRealtimeTranscriber("DISPATCH", caller_number, loop, call_sid)
                     asyncio.create_task(browser_transcriber.connect())
                     browser_transcribers[caller_number] = {
                         "browser_transcriber": browser_transcriber
                     }
                     
                     # Phone transcriber for CALLER audio
-                    phone_transcriber = DeepgramRealtimeTranscriber("CALLER", caller_number, loop)
+                    phone_transcriber = DeepgramRealtimeTranscriber("CALLER", caller_number, loop, call_sid)
                     asyncio.create_task(phone_transcriber.connect())
                     active_transcribers[call_sid] = {
                         "phone_transcriber": phone_transcriber
@@ -2090,7 +2461,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                         # Linear interpolation between samples
                                         interpolated = (samples_8k[i] + samples_8k[i + 1]) // 2
                                         samples_16k.append(interpolated)
-                                    samples_16k.append(samples_8k[-1])  # Last sample
+                                    samples_16k.append(samples_8k[-1]);  # Last sample
                                     
                                     # Pack back to bytes
                                     pcm_data_16khz = struct.pack(f'<{len(samples_16k)}h', *samples_16k)
@@ -2127,7 +2498,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "audio": payload_16khz,
                                     "sample_rate": RATE,  # Indicate this is 16kHz
                                     "encoding": "pcm16",   # Raw PCM16, not μ-law
-                                    "timestamp": datetime.now().isoformat()
+                                    "timestamp": datetime.now().isoformat(),
+                                    "call_sid": call_sid
                                 }
                                 for client in list(transcription_clients[caller_number]):
                                     try:
@@ -2141,6 +2513,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif message["event"] == "stop":
                 logger.info(f"📴 Call ended from {caller_number}")
+
+                # Mark call as ended in database
+                if call_sid:
+                    await mark_call_ended(call_sid)
 
                 notification_message = {
                     "type": "call_ended",
@@ -2288,12 +2664,20 @@ async def get_settings():
 async def update_settings(settings: AgencySettings):
     """Update agency settings"""
     try:
-        settings_dict = settings.dict()
-        if save_settings(settings_dict):
+        # Load current settings to ensure we don't overwrite with defaults if fields are missing
+        current_settings = load_settings()
+        
+        # Get new settings, excluding unset fields to allow partial updates
+        new_settings = settings.dict(exclude_unset=True)
+        
+        # Merge settings
+        updated_settings = {**current_settings, **new_settings}
+        
+        if save_settings(updated_settings):
             return SettingsResponse(
                 status="success",
                 message="Settings updated successfully",
-                settings=settings_dict
+                settings=updated_settings
             )
         else:
             raise HTTPException(
@@ -2311,6 +2695,187 @@ async def update_settings(settings: AgencySettings):
             status_code=500,
             detail=f"Failed to update settings: {str(e)}"
         )
+
+
+@app.post("/api/send-sms")
+async def send_sms_endpoint(request: SMSRequest):
+    """
+    Send a raw SMS message via Twilio
+    """
+    try:
+        result = send_sms(request.to, request.body)
+        if result['status'] == 'error':
+            raise HTTPException(status_code=500, detail=result['message'])
+        return result
+    except Exception as e:
+        logger.error(f"Error sending SMS: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Call History API Endpoints
+@app.get("/api/calls")
+async def get_calls(db: AsyncSession = Depends(get_db)):
+    """Get all calls ordered by most recent first"""
+    try:
+        result = await db.execute(
+            select(Call).order_by(Call.start_time.desc()).limit(50)
+        )
+        calls = result.scalars().all()
+        
+        return {
+            "status": "success",
+            "calls": [
+                {
+                    "id": call.id,
+                    "call_sid": call.call_sid,
+                    "phone": call.caller_number,
+                    "to_number": call.to_number,
+                    "caller_name": call.caller_name,
+                    "language": call.language,
+                    "start_time": call.start_time.isoformat() if call.start_time else None,
+                    "end_time": call.end_time.isoformat() if call.end_time else None,
+                    "duration": call.duration,
+                    "is_live": call.is_live,
+                    "date": call.start_time.strftime("%m/%d/%y") if call.start_time else "",
+                    "time": call.start_time.strftime("%H:%M") if call.start_time else "",
+                }
+                for call in calls
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching calls: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/calls/{call_sid}/transcripts")
+async def get_call_transcripts(call_sid: str, db: AsyncSession = Depends(get_db)):
+    """Get all transcripts for a specific call"""
+    try:
+        result = await db.execute(
+            select(Transcript)
+            .where(Transcript.call_sid == call_sid)
+            .order_by(Transcript.timestamp.asc())
+        )
+        transcripts = result.scalars().all()
+        
+        return {
+            "status": "success",
+            "transcripts": [
+                {
+                    "id": t.id,
+                    "speaker": t.speaker,
+                    "message": t.message,
+                    "translated_message": t.translated_message,
+                    "language": t.language,
+                    "timestamp": t.timestamp.isoformat() if t.timestamp else None,
+                    "time": t.timestamp.strftime("%I:%M %p") if t.timestamp else "",
+                }
+                for t in transcripts
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching transcripts for {call_sid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/calls/{call_sid}/insights")
+async def get_call_insights(call_sid: str, db: AsyncSession = Depends(get_db)):
+    """Get insights for a specific call"""
+    try:
+        result = await db.execute(
+            select(CallInsight).where(CallInsight.call_sid == call_sid)
+        )
+        insight = result.scalar_one_or_none()
+        
+        if not insight:
+            return {
+                "status": "success",
+                "insights": {
+                    "summary": "",
+                    "location": [],
+                    "persons_described": [],
+                    "additional_info": [],
+                    "incident": {},
+                    "time_info": {},
+                }
+            }
+        
+        return {
+            "status": "success",
+            "insights": {
+                "summary": insight.summary or "",
+                "location": insight.location or [],
+                "persons_described": insight.persons_described or [],
+                "additional_info": insight.additional_info or [],
+                "incident": insight.incident or {},
+                "time_info": insight.time_info or {},
+                "protocol_questions": insight.protocol_questions or [],
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error fetching insights for {call_sid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/calls/{call_sid}/insights")
+async def save_call_insights(call_sid: str, insights: dict):
+    """Save insights for a specific call"""
+    try:
+        await save_or_update_insights_to_db(call_sid, insights)
+        return {"status": "success", "message": "Insights saved"}
+    except Exception as e:
+        logger.error(f"Error saving insights for {call_sid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/calls/{call_sid}/location")
+async def get_call_location(call_sid: str, db: AsyncSession = Depends(get_db)):
+    """Get location data for a specific call"""
+    try:
+        result = await db.execute(
+            select(LocationData)
+            .where(LocationData.call_sid == call_sid)
+            .order_by(LocationData.timestamp.desc())
+        )
+        location = result.scalars().first()
+        
+        if not location:
+            return {
+                "status": "success",
+                "location": None
+            }
+        
+        return {
+            "status": "success",
+            "location": {
+                "latitude": location.latitude,
+                "longitude": location.longitude,
+                "address": location.address,
+                "timestamp": location.timestamp.isoformat() if location.timestamp else None,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error fetching location for {call_sid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/database/clear")
+async def clear_database(db: AsyncSession = Depends(get_db)):
+    """Clear all operational data from the database"""
+    try:
+        # Delete in order of dependencies (though cascade should handle it, explicit is safer)
+        await db.execute(delete(LocationData))
+        await db.execute(delete(CallInsight))
+        await db.execute(delete(Transcript))
+        await db.execute(delete(Call))
+        await db.execute(delete(LoginLog))
+        
+        await db.commit()
+        return {"status": "success", "message": "Database cleared successfully"}
+    except Exception as e:
+        await db.rollback()
+        logging.error(f"Error clearing database: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def main():

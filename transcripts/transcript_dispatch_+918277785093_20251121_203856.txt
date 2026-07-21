@@ -1,0 +1,12 @@
+[20:36:31] [DISPATCH]: Can you please forward me as a address by telling?
+[20:36:57] [DISPATCH]: Okay. Don't worry. Can you please forward me the nearest landmark car?
+[20:36:59] [DISPATCH]: Of that fire taking place?
+[20:37:16] [DISPATCH]: Okay. Can you please
+[20:37:20] [DISPATCH]: specify what kind of weapon or is he having still the weapon?
+[20:37:49] [DISPATCH]: Okay. So don't worry right now.
+[20:37:54] [DISPATCH]: We'll be immediately coming to that location.
+[20:37:55] [DISPATCH]: By the way, are you in the same location?
+[20:38:01] [DISPATCH]: Okay.
+[20:38:04] [DISPATCH]: So I'm sending you a link, and please press on that link so that we can
+[20:38:09] [DISPATCH]: immediately get the location of you.
+[20:38:13] [DISPATCH]: So please do check your SMS. Please check and allow it.

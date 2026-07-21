@@ -1,0 +1,14 @@
+[20:31:44] [DISPATCH]: Okay. What's the exact address? Can you please provide me?
+[20:31:45] [DISPATCH]: Don't be
+[20:31:50] [DISPATCH]: panicking. We'll be there right away. Just provide me the address.
+[20:32:06] [DISPATCH]: Okay. Don't worry. We'll be there.
+[20:32:10] [DISPATCH]: The near the Bangal Market. Can you please provide me some kind of
+[20:32:11] [DISPATCH]: landmark nearby?
+[20:32:13] [DISPATCH]: Is there any landmark?
+[20:32:28] [DISPATCH]: Thank you for providing me that information. Can you please provide me
+[20:32:29] [DISPATCH]: is it are you word or something?
+[20:32:37] [DISPATCH]: So then I can send a medical team for in fixing you.
+[20:32:57] [DISPATCH]: Okay. Don't worry. We'll be sending you the emergency.
+[20:33:02] [DISPATCH]: Can you please press on the link which will be sent to you so that we can get the exact location?
+[20:33:20] [DISPATCH]: Thank you. We have got your location, so don't worry.
+[20:33:22] [DISPATCH]: We'll be there right away.

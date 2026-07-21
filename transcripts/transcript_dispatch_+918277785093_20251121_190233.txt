@@ -1,0 +1,9 @@
+[19:00:50] [DISPATCH]: What's the exact address of this accident?
+[19:00:53] [DISPATCH]: Is there any specific sector number or any kind of thing?
+[19:00:54] [DISPATCH]: Or any landlocks nearby?
+[19:01:08] [DISPATCH]: Are you safe right now?
+[19:01:18] [DISPATCH]: Can you provide me the
+[19:01:21] [DISPATCH]: description of what happened? What is the situation? Is it a road accident or any kind of other accident?
+[19:01:47] [DISPATCH]: Okay. We will send an ambulance immediately
+[19:01:47] [DISPATCH]: Can you please press the link what I have sent?
+[19:02:24] [DISPATCH]: Thank you for your cooperation. We'll be sending it immediately.

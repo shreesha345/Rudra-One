@@ -1,6 +1,4 @@
-// Frontend-only Twilio SMS helper replicating raw curl request.
-// WARNING: Putting your Auth Token in frontend code exposes it to users.
-// This should only be used for quick testing. For production, use a backend.
+// Frontend Twilio SMS helper using backend API.
 
 export interface SMSResponse {
   success: boolean;
@@ -8,22 +6,9 @@ export interface SMSResponse {
   error?: string;
 }
 
-// Hard-code Account SID (from curl) and read Auth Token from env so it isn't committed.
-// Replace VITE_TWILIO_AUTH_TOKEN in your .env with the real token.
-const ACCOUNT_SID = import.meta.env.VITE_TWILIO_ACCOUNT_SID ;
-const AUTH_TOKEN = import.meta.env.VITE_TWILIO_AUTH_TOKEN ;
-const FROM_NUMBER = import.meta.env.VITE_TWILIO_PHONE_NUMBER;
-
 // Use the backend API URL for the tracking link. 
 // NOTE: VITE_API_URL must be set to your public ngrok URL for this to work on a mobile device.
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
-function buildAuthHeader(): string {
-  if (!ACCOUNT_SID || !AUTH_TOKEN) {
-    console.error('❌ Missing ACCOUNT_SID or AUTH_TOKEN');
-  }
-  return 'Basic ' + btoa(`${ACCOUNT_SID}:${AUTH_TOKEN}`);
-}
 
 async function getPublicUrl(): Promise<string> {
   try {
@@ -38,35 +23,27 @@ async function getPublicUrl(): Promise<string> {
 
 async function sendRawSMS(to: string, body: string): Promise<SMSResponse> {
   try {
-    console.log('📤 Sending SMS (frontend-only) to:', to);
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${ACCOUNT_SID}/Messages.json`;
-    const form = new URLSearchParams();
-    form.append('To', to);
-    form.append('From', FROM_NUMBER);
-    form.append('Body', body);
-
-    const response = await fetch(url, {
+    console.log('📤 Sending SMS via backend to:', to);
+    
+    const response = await fetch(`${API_URL}/api/send-sms`, {
       method: 'POST',
       headers: {
-        'Authorization': buildAuthHeader(),
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'application/json',
       },
-      body: form.toString()
+      body: JSON.stringify({ to, body })
     });
 
-    const data = await response.json().catch(() => ({}));
+    const data = await response.json();
 
-
-    console.log(data)
-
-    if (response.ok) {
-      console.log('✅ Twilio accepted message:', data.sid);
-      return { success: true, messageSid: data.sid };
+    if (response.ok && data.status === 'success') {
+      console.log('✅ SMS sent successfully:', data.message_sid);
+      return { success: true, messageSid: data.message_sid };
     }
-    console.error('❌ Twilio error', data);
-    return { success: false, error: data.message || 'Twilio API error' };
+    
+    console.error('❌ SMS send failed', data);
+    return { success: false, error: data.message || 'Failed to send SMS' };
   } catch (e) {
-    console.error('❌ Frontend SMS send failed', e);
+    console.error('❌ SMS send failed', e);
     return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
   }
 }
@@ -74,6 +51,7 @@ async function sendRawSMS(to: string, body: string): Promise<SMSResponse> {
 async function sendTrackingLink(to: string): Promise<SMSResponse> {
   const publicUrl = await getPublicUrl();
   const trackingUrl = `${publicUrl}/location-request?caller=${encodeURIComponent(to)}`;
+  console.log('🔗 Constructed tracking URL:', trackingUrl);
   const body = `📍 Location Tracking\n${trackingUrl}`;
   return sendRawSMS(to, body);
 }

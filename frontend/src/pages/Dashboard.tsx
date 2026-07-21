@@ -194,15 +194,133 @@ export const Dashboard = () => {
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [isSettingsSidebarOpen, setIsSettingsSidebarOpen] = useState(true);
-  const [activeSettingsSection, setActiveSettingsSection] = useState<'call-forwarding' | 'language' | 'storage'>('call-forwarding');
+  const [activeSettingsSection, setActiveSettingsSection] = useState<'call-forwarding' | 'language' | 'database'>('call-forwarding');
+
+  // Load settings on mount and when window regains focus
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+        const response = await fetch(`${API_BASE_URL}/api/settings`);
+        const data = await response.json();
+        
+        if (data.status === 'success' && data.settings) {
+          if (data.settings.default_translation_language) {
+            const langCode = data.settings.default_translation_language;
+            
+            // Map ISO code to full name for the Select component
+            const codeToName: Record<string, string> = {
+              'en': 'English',
+              'hi': 'Hindi',
+              'bn': 'Bengali',
+              'te': 'Telugu',
+              'mr': 'Marathi',
+              'ta': 'Tamil',
+              'gu': 'Gujarati',
+              'kn': 'Kannada',
+              'ml': 'Malayalam',
+              'pa': 'Punjabi',
+              'or': 'Odia'
+            };
+            
+            const langName = codeToName[langCode];
+            if (langName) {
+              setDetectedLanguage(langName);
+              console.log(`🌍 Set default language from settings: ${langName} (${langCode})`);
+            }
+          }
+
+          // Update emergency contacts from settings
+          setEmergencyContacts({
+            hospital: data.settings.emergency_hospital || '',
+            police: data.settings.emergency_police || '',
+            fire: data.settings.emergency_fire || ''
+          });
+          console.log('🚑 Updated emergency contacts from settings');
+        }
+      } catch (error) {
+        console.error('Failed to load settings in Dashboard:', error);
+      }
+    };
+    
+    // Fetch on mount
+    fetchSettings();
+    
+    // Refetch when window regains focus (e.g., after navigating back from Settings)
+    const handleFocus = () => {
+      console.log('🔄 Window focused - refreshing settings');
+      fetchSettings();
+    };
+    
+    window.addEventListener('focus', handleFocus);
+    
+    // Also listen for custom event from Settings page
+    const handleSettingsUpdate = () => {
+      console.log('⚙️ Settings updated - refreshing');
+      fetchSettings();
+    };
+    
+    window.addEventListener('settings-updated', handleSettingsUpdate);
+    
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('settings-updated', handleSettingsUpdate);
+    };
+  }, []);
+
+  // Load call history from database
+  const loadCallHistory = useCallback(async () => {
+    try {
+      const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_BASE_URL}/api/calls`);
+      const data = await response.json();
+      
+      if (data.status === 'success' && data.calls) {
+        const historyCalls: Call[] = data.calls.map((call: any) => ({
+          phone: call.phone || 'Unknown Caller',
+          preview: 'View call history...',
+          time: call.time,
+          date: call.date,
+          language: call.language,
+          isLive: call.is_live,
+          call_sid: call.call_sid,
+        }));
+        
+        setCalls(historyCalls);
+        console.log(`📚 Loaded ${historyCalls.length} calls from history`);
+      }
+    } catch (error) {
+      console.error('Failed to load call history:', error);
+    }
+  }, []);
+
+  // Load call history on mount
+  useEffect(() => {
+    loadCallHistory();
+  }, [loadCallHistory]);
   
   // Map location state
-  const [mapLocation, setMapLocation] = useState({
-    latitude: 40.7128,
-    longitude: -74.0060,
-    address: "123 Main Street, New York, NY",
-    district: "Manhattan, New York"
+  const [mapLocation, setMapLocation] = useState(() => {
+    const saved = localStorage.getItem('mapLocation');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse saved map location:', e);
+      }
+    }
+    return {
+      latitude: 40.7128,
+      longitude: -74.0060,
+      address: "123 Main Street, New York, NY",
+      district: "Manhattan, New York"
+    };
   });
+  
+  // Save map location to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('mapLocation', JSON.stringify(mapLocation));
+  }, [mapLocation]);
   
   // Emergency services state
   const [nearestServices, setNearestServices] = useState<{
@@ -212,7 +330,22 @@ export const Dashboard = () => {
   }>({});
   const [audioLevel, setAudioLevel] = useState(0);
   const messageInputRef = useRef<HTMLInputElement>(null);
-  const [selectedIncident, setSelectedIncident] = useState(0);
+  const [selectedIncident, setSelectedIncident] = useState(() => {
+    const saved = localStorage.getItem('selectedIncident');
+    if (saved) {
+      try {
+        return parseInt(saved, 10);
+      } catch (e) {
+        console.error('Failed to parse saved selected incident:', e);
+      }
+    }
+    return 0;
+  });
+
+  // Save selected incident to localStorage
+  useEffect(() => {
+    localStorage.setItem('selectedIncident', selectedIncident.toString());
+  }, [selectedIncident]);
   const [isLiveCall, setIsLiveCall] = useState(false);
   
   // Tabs section resize state
@@ -259,7 +392,18 @@ export const Dashboard = () => {
   const [isMicActive, setIsMicActive] = useState(false);
   const audioServiceRef = useRef<AudioService | null>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
-  const [selectedCallSid, setSelectedCallSid] = useState<string | null>(null);
+  const [selectedCallSid, setSelectedCallSid] = useState<string | null>(() => {
+    return localStorage.getItem('selectedCallSid');
+  });
+
+  // Save selected call SID to localStorage
+  useEffect(() => {
+    if (selectedCallSid) {
+      localStorage.setItem('selectedCallSid', selectedCallSid);
+    } else {
+      localStorage.removeItem('selectedCallSid');
+    }
+  }, [selectedCallSid]);
   const [selectedCallerNumber, setSelectedCallerNumber] = useState<string | null>(null);
   const [pendingToast, setPendingToast] = useState<{ title: string; description: string } | null>(null);
 
@@ -370,7 +514,22 @@ export const Dashboard = () => {
   ]);
   const [selectedMessage, setSelectedMessage] = useState<string | null>(null);
   const [linkSent, setLinkSent] = useState<{[key: string]: boolean}>({});
-  const [locationData, setLocationData] = useState<{[key: string]: {latitude: number, longitude: number, address?: string, timestamp: string}}>({});
+  const [locationData, setLocationData] = useState<{[call_sid: string]: {latitude: number, longitude: number, address?: string, timestamp: string}}>(() => {
+    const saved = localStorage.getItem('locationData');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse saved location data:', e);
+      }
+    }
+    return {};
+  });
+
+  // Save location data to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('locationData', JSON.stringify(locationData));
+  }, [locationData]);
 
   // Dispatch state
   const [dispatchEmergencyType, setDispatchEmergencyType] = useState<'hospital' | 'police' | 'fire'>('hospital');
@@ -456,6 +615,24 @@ export const Dashboard = () => {
   useEffect(() => {
     localStorage.setItem('conversation', JSON.stringify(conversation));
   }, [conversation]);
+
+  // Save insights to database whenever they change (for live calls)
+  useEffect(() => {
+    if (selectedCallSid && isLiveCall && insights.summary) {
+      const saveInsights = async () => {
+        try {
+          await apiService.saveInsights(selectedCallSid, insights);
+          console.log('💾 Saved insights to database');
+        } catch (error) {
+          console.error('Failed to save insights:', error);
+        }
+      };
+      
+      // Debounce the save to avoid too many database writes
+      const timeoutId = setTimeout(saveInsights, 2000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [insights, selectedCallSid, isLiveCall]);
 
   // Save emergency contacts to localStorage whenever they change
   useEffect(() => {
@@ -551,19 +728,25 @@ export const Dashboard = () => {
       return `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
     }
   };
-
   // WebSocket for call notifications
   const { isConnected: notificationsConnected } = useWebSocket({
     url: apiService.getWebSocketUrl('/client/notifications'),
     autoReconnect: false, // Disable auto-reconnect to prevent spam
-    onMessage: (message: TranscriptionMessage) => {
+    onOpen: () => {
+      console.log('🔔 Notification WebSocket CONNECTED');
+    },
+    onClose: () => {
+      console.log('🔔 Notification WebSocket DISCONNECTED');
+    },
+    onMessage: async (message: TranscriptionMessage) => {
+      console.log('🔔 Notification received:', message);
       const msg = message as any;
       if (msg.type === 'location_update' && msg.location) {
         // Handle location data received from backend
-        const { latitude, longitude, caller_number } = msg.location;
+        const { latitude, longitude, caller_number, call_sid } = msg.location;
         console.log('📍 Location received via WebSocket:', msg.location);
         console.log('📍 Caller number from location:', caller_number);
-        console.log('📍 Active messages:', activeMessages);
+        console.log('📍 Call SID from location:', call_sid);
         
         if (latitude && longitude) {
           // Reverse geocode to get address
@@ -575,29 +758,43 @@ export const Dashboard = () => {
               timestamp: new Date().toISOString()
             };
             
-            // Store location data for both the caller number and the test number
-            setLocationData(prev => {
-              const updated = {
-                ...prev,
-                [caller_number || 'unknown']: locationInfo
-              };
+            // Store location data using call_sid if available, otherwise find from calls list
+            setCalls(prevCalls => {
+              let targetCallSid = call_sid;
               
-              // Also store for test number if caller is unknown
-              if (caller_number === 'unknown' || !caller_number) {
-                updated['+917795075436'] = locationInfo;
+              // If call_sid not provided, find the most recent call from this caller
+              if (!targetCallSid && caller_number) {
+                const matchingCall = prevCalls.find(call => call.phone === caller_number);
+                if (matchingCall && matchingCall.call_sid) {
+                  targetCallSid = matchingCall.call_sid;
+                  console.log('📍 Found call_sid from calls list:', targetCallSid);
+                }
               }
               
-              console.log('✅ Location data updated:', updated);
-              return updated;
+              if (targetCallSid) {
+                setLocationData(prev => {
+                  const updated = {
+                    ...prev,
+                    [targetCallSid]: locationInfo
+                  };
+                  console.log('✅ Location data updated for call_sid:', targetCallSid);
+                  console.log('📍 Updated locationData state:', updated);
+                  return updated;
+                });
+                
+                // Show toast notification
+                toast({
+                  title: "📍 Location Received",
+                  description: address,
+                });
+                
+                console.log('✅ Location stored for call_sid:', targetCallSid);
+              } else {
+                console.log('⚠️ Could not find call_sid for location update');
+              }
+              
+              return prevCalls;
             });
-            
-            // Show toast notification
-            toast({
-              title: "📍 Location Received",
-              description: address,
-            });
-            
-            console.log('✅ Location stored for:', caller_number || 'unknown', 'and +917795075436');
           });
         }
       } else if (message.type === 'call_started') {
@@ -609,7 +806,7 @@ export const Dashboard = () => {
           }
 
           const newCall: Call = {
-            phone: message.caller_number || 'Unknown',
+            phone: (message.caller_number && message.caller_number !== 'unknown') ? message.caller_number : 'Unknown Caller',
             preview: 'Incoming call...',
             time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
             date: new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: '2-digit' }),
@@ -619,7 +816,7 @@ export const Dashboard = () => {
           };
 
           // Clear conversation and insights for new call
-          console.log('🆕 New call started - clearing conversation and insights');
+          console.log('🆕 New call started - clearing conversation and insights. Caller:', newCall.phone);
           setConversation([]);
           setInsights({
             summary: "",
@@ -630,6 +827,9 @@ export const Dashboard = () => {
             time_info: {},
             new_information_found: false
           });
+          
+          // Location data will be set when location_update message arrives
+          // No need to clear here as each call has unique call_sid
           
           // Reset insights extractor for new call
           if (insightsExtractorRef.current) {
@@ -654,14 +854,135 @@ export const Dashboard = () => {
             description: `Call from ${message.caller_number}`,
           });
 
+          // Auto-select this call (set it as the active call)
+          setTimeout(() => {
+            setSelectedIncident(0); // Since new call is added at index 0
+            setSelectedCallSid(message.call_sid);
+            setSelectedCallerNumber(newCall.phone);
+            setIsLiveCall(true);
+            setDetectedLanguage('English');
+            setActiveNavItem('calls'); // Switch to calls view
+            
+            // Clear old conversation and insights for new call
+            setConversation([]);
+            setInsights({
+              summary: "",
+              location: [],
+              persons_described: [],
+              additional_info: [],
+              incident: {},
+              time_info: {},
+              new_information_found: false
+            });
+            setProtocolQuestions([]);
+            
+            console.log('📞 Auto-selected incoming call:', message.caller_number);
+          }, 100); // Small delay to ensure calls array is updated
+
           return [newCall, ...prev];
         });
       } else if (message.type === 'call_ended') {
+        console.log('📴 Call ended:', message.call_sid);
+        
+        // Immediately update the call in the list to show it as ended
         setCalls(prev => prev.map(call =>
           call.call_sid === message.call_sid
             ? { ...call, isLive: false }
             : call
         ));
+        
+        // Stop audio recording when call ends
+        if (audioServiceRef.current) {
+          audioServiceRef.current.stopRecording();
+          audioServiceRef.current.stopPlayback();
+        }
+        
+        // Turn off microphone
+        setIsMicActive(false);
+        
+        // Clear protocol session if it's the current call
+        if (message.call_sid === selectedCallSid && selectedCallerNumber) {
+          if (protocolManagerRef.current) {
+            // Clear the protocol session for this caller
+            const state = protocolManagerRef.current.getSession(selectedCallerNumber);
+            if (state) {
+              // Reset the session
+              protocolManagerRef.current.initializeSession(selectedCallerNumber);
+            }
+          }
+        }
+        
+        // Stop insights streaming
+        setIsStreamingInsights(false);
+        
+        // Reload call history from database to get the updated call data
+        // Add a small delay to ensure DB is updated
+        setTimeout(async () => {
+          try {
+            await loadCallHistory();
+            console.log('✅ Call history reloaded after call ended');
+            
+            // If this was the selected call, reload its data from the database
+            if (message.call_sid === selectedCallSid) {
+              const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+              
+              try {
+                // Load transcripts
+                const transcriptsRes = await fetch(`${API_BASE_URL}/api/calls/${message.call_sid}/transcripts`);
+                const transcriptsData = await transcriptsRes.json();
+                
+                if (transcriptsData.status === 'success' && transcriptsData.transcripts) {
+                  const loadedConversation = transcriptsData.transcripts.map((t: any) => ({
+                    sender: t.speaker,
+                    time: t.time,
+                    message: t.message,
+                  }));
+                  setConversation(loadedConversation);
+                  console.log(`📜 Loaded ${loadedConversation.length} transcripts after call ended`);
+                }
+                
+                // Load insights
+                const insightsRes = await fetch(`${API_BASE_URL}/api/calls/${message.call_sid}/insights`);
+                const insightsData = await insightsRes.json();
+                
+                if (insightsData.status === 'success' && insightsData.insights) {
+                  setInsights(insightsData.insights);
+                  if (insightsData.insights.protocol_questions) {
+                    setProtocolQuestions(insightsData.insights.protocol_questions);
+                  }
+                  console.log('💡 Loaded insights after call ended');
+                }
+                
+                // Load location
+                const locationRes = await fetch(`${API_BASE_URL}/api/calls/${message.call_sid}/location`);
+                const locationData = await locationRes.json();
+                
+                if (locationData.status === 'success' && locationData.location) {
+                  setLocationData(prev => ({
+                    ...prev,
+                    [message.call_sid]: {
+                      latitude: locationData.location.latitude,
+                      longitude: locationData.location.longitude,
+                      address: locationData.location.address,
+                      timestamp: locationData.location.timestamp
+                    }
+                  }));
+                  console.log('📍 Loaded location after call ended');
+                }
+              } catch (error) {
+                console.error('Error loading call data after end:', error);
+              }
+            }
+          } catch (error) {
+            console.error('❌ Failed to reload call history:', error);
+          }
+        }, 1500);
+        
+        // Clear selected call if it's the one that ended
+        if (message.call_sid === selectedCallSid) {
+          setIsLiveCall(false);
+          setSelectedCallerNumber(null); // Clear caller number to stop WebSocket
+        }
       }
     },
   });
@@ -699,6 +1020,12 @@ export const Dashboard = () => {
 
       // Handle audio playback from phone
       if (message.type === 'audio' && message.audio) {
+        // Only play audio if it matches the selected call SID
+        // This prevents hearing multiple audio streams if there are multiple active calls from the same number
+        if (message.call_sid && selectedCallSid && message.call_sid !== selectedCallSid) {
+          return;
+        }
+
         try {
           if (!audioServiceRef.current) {
             audioServiceRef.current = new AudioService();
@@ -831,9 +1158,28 @@ export const Dashboard = () => {
             // Process the message with AI (runs in browser)
             insightsExtractorRef.current
               .processSentence(message.message, selectedCallerNumber)
-              .then(updatedInsights => {
+              .then(async (updatedInsights) => {
                 console.log('✅ Insights updated (client-side):', updatedInsights);
                 setInsights(updatedInsights);
+
+                // Save insights to database
+                if (selectedCallSid) {
+                  try {
+                    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+                    await fetch(`${API_BASE_URL}/api/calls/${selectedCallSid}/insights`, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                      },
+                      body: JSON.stringify({
+                        ...updatedInsights,
+                        protocol_questions: protocolQuestions
+                      }),
+                    });
+                  } catch (error) {
+                    console.error('Failed to save insights to DB:', error);
+                  }
+                }
 
                 // Update map location if location information is found
                 if (updatedInsights.location && updatedInsights.location.length > 0) {
@@ -908,17 +1254,45 @@ export const Dashboard = () => {
     navigate("/");
   };
 
-  const handleClearStorage = () => {
-    if (window.confirm('Are you sure you want to clear all stored data? This will remove all calls, training logs, and settings. This action cannot be undone.')) {
-      localStorage.clear();
-      toast({
-        title: "Storage Cleared",
-        description: "All stored data has been removed. The page will reload.",
-      });
-      // Reload page to reset all state
-      setTimeout(() => {
-        window.location.reload();
-      }, 1000);
+  const handleClearDatabase = async () => {
+    if (window.confirm('Are you sure you want to delete ALL data from the database? This will permanently remove all call history, transcripts, insights, and logs. This action cannot be undone.')) {
+      try {
+        await apiService.clearDatabase();
+        localStorage.clear();
+        
+        // Reset all state variables immediately
+        setCalls([]);
+        setConversation([]);
+        setInsights({
+          summary: "",
+          location: [],
+          persons_described: [],
+          additional_info: [],
+          incident: {},
+          time_info: {},
+          new_information_found: false
+        });
+        setProtocolQuestions([]);
+        setLocationData({});
+        setSelectedCallSid(null);
+        setTrainingLogs([]);
+        setTrainingConversation([]);
+        setActiveNavItem('calls');
+        
+        toast({
+          title: "Database Cleared",
+          description: "All data has been permanently deleted. The page will reload.",
+        });
+        setTimeout(() => {
+          window.location.reload();
+        }, 1000);
+      } catch (error) {
+        toast({
+          title: "Error",
+          description: "Failed to clear database",
+          variant: "destructive",
+        });
+      }
     }
   };
 
@@ -1049,9 +1423,20 @@ export const Dashboard = () => {
 
   const handleEmergencySMS = async (station: EmergencyStation) => {
     try {
-      // Extract phone number from station name or use a default
-      // In production, you'd have phone numbers in the station data
-      const phoneNumber = station.id; // Placeholder - you'd get actual phone from station data
+      // Use configured emergency contact for this service type
+      // If not set, fallback to station ID (which will likely fail, but keeps existing behavior as fallback)
+      const configuredContact = emergencyContacts[station.type];
+      
+      if (!configuredContact) {
+        toast({
+          title: "Missing Contact Info",
+          description: `Please configure the ${station.type} emergency number in Settings.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const phoneNumber = configuredContact;
       
       const response = await fetch(`${API_BASE_URL}/sms/emergency`, {
         method: 'POST',
@@ -1091,8 +1476,19 @@ export const Dashboard = () => {
 
   const handleEmergencyCall = async (station: EmergencyStation) => {
     try {
-      // Extract phone number from station - in production this would come from station data
-      const phoneNumber = station.id; // Placeholder
+      // Use configured emergency contact for this service type
+      const configuredContact = emergencyContacts[station.type];
+      
+      if (!configuredContact) {
+        toast({
+          title: "Missing Contact Info",
+          description: `Please configure the ${station.type} emergency number in Settings.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const phoneNumber = configuredContact;
       
       const response = await fetch(`${API_BASE_URL}/call/emergency`, {
         method: 'POST',
@@ -2113,7 +2509,7 @@ export const Dashboard = () => {
 
 
 
-  const handleIncidentClick = (idx: number) => {
+  const handleIncidentClick = async (idx: number) => {
     // Toggle: if clicking the same call, deselect it and show map
     if (selectedIncident === idx && activeNavItem === "calls") {
       setSelectedIncident(0);
@@ -2130,13 +2526,88 @@ export const Dashboard = () => {
     setDetectedLanguage(call.language);
     setIsLiveCall(call.isLive);
 
-    // Clear conversation when switching calls
-    setConversation([]);
-
     if (call.call_sid) {
       setSelectedCallSid(call.call_sid);
-      setSelectedCallerNumber(call.phone);
+      
+      // Only set selected caller number for live calls (for WebSocket)
+      if (call.isLive) {
+        setSelectedCallerNumber(call.phone);
+      } else {
+        setSelectedCallerNumber(null);
+      }
+      
       console.log('Selected call:', call.phone, 'SID:', call.call_sid);
+      
+      // Load historical data if call is not live
+      if (!call.isLive) {
+        const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+        
+        try {
+          // Clear previous data first
+          setConversation([]);
+          setLocationData({});
+          setProtocolQuestions([]); // Clear protocol questions
+          setInsights({
+            summary: "",
+            location: [],
+            persons_described: [],
+            additional_info: [],
+            incident: {},
+            time_info: {},
+            new_information_found: false
+          });
+          
+          // Load transcripts
+          const transcriptsRes = await fetch(`${API_BASE_URL}/api/calls/${call.call_sid}/transcripts`);
+          const transcriptsData = await transcriptsRes.json();
+          
+          if (transcriptsData.status === 'success' && transcriptsData.transcripts) {
+            const loadedConversation = transcriptsData.transcripts.map((t: any) => ({
+              sender: t.speaker,
+              time: t.time,
+              message: t.message,
+            }));
+            setConversation(loadedConversation);
+            console.log(`📜 Loaded ${loadedConversation.length} transcripts`);
+          }
+          
+          // Load insights
+          const insightsRes = await fetch(`${API_BASE_URL}/api/calls/${call.call_sid}/insights`);
+          const insightsData = await insightsRes.json();
+          
+          if (insightsData.status === 'success' && insightsData.insights) {
+            setInsights(insightsData.insights);
+            if (insightsData.insights.protocol_questions) {
+              setProtocolQuestions(insightsData.insights.protocol_questions);
+            }
+            console.log('💡 Loaded insights');
+          }
+          
+          // Load location
+          const locationRes = await fetch(`${API_BASE_URL}/api/calls/${call.call_sid}/location`);
+          const locationData = await locationRes.json();
+          
+          if (locationData.status === 'success' && locationData.location) {
+            setLocationData({
+              [call.call_sid]: {
+                latitude: locationData.location.latitude,
+                longitude: locationData.location.longitude,
+                address: locationData.location.address,
+                timestamp: locationData.location.timestamp
+              }
+            });
+            console.log('📍 Loaded location for', call.phone);
+          } else {
+            console.log('📍 No location data for this call');
+          }
+        } catch (error) {
+          console.error('Error loading call history:', error);
+        }
+      } else {
+        // Clear data for live calls
+        setConversation([]);
+        setLocationData({});
+      }
     }
   };
 
@@ -2168,6 +2639,16 @@ export const Dashboard = () => {
 
   // Message Functions
   const handleSendTrackingLink = async (phoneNumber: string) => {
+    // Validate phone number
+    if (!phoneNumber || phoneNumber === 'Unknown Caller' || phoneNumber === 'Unknown') {
+      toast({
+        title: "Invalid Phone Number",
+        description: "Cannot send SMS to unknown caller.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const targetNumber = phoneNumber;
     
     // Show confirmation dialog
@@ -2186,6 +2667,8 @@ export const Dashboard = () => {
     });
 
     try {
+      console.log(`📤 Initiating tracking link SMS to ${targetNumber}`);
+      
       // Send SMS via Twilio
       const result = await twilioService.sendTrackingLink(targetNumber);
 
@@ -2200,22 +2683,22 @@ export const Dashboard = () => {
 
         console.log('📱 SMS sent successfully. Message SID:', result.messageSid);
       } else {
+        console.error('❌ Failed to send SMS:', result.error);
+        
         toast({
           title: "❌ Failed to Send SMS",
           description: result.error || "Unknown error occurred",
           variant: "destructive",
         });
-
-        console.error('Failed to send SMS:', result.error);
       }
     } catch (error) {
+      console.error('Error in handleSendTrackingLink:', error);
+      
       toast({
         title: "Error",
         description: "Failed to send tracking link. Please try again.",
         variant: "destructive",
       });
-      
-      console.error('Error in handleSendTrackingLink:', error);
     }
   };
 
@@ -2435,37 +2918,7 @@ export const Dashboard = () => {
                {calls.map((call, idx) => (
                   <div key={idx} 
                        className={`p-3 border-b border-[#1a1a2a] cursor-pointer hover:bg-[#1a1a1a] transition-colors relative ${idx === selectedIncident ? 'bg-gradient-to-r from-[#1a1a1a] to-[#1e1e2e]' : ''}`}
-                       onClick={() => {
-                         // Only clear if switching to a different call
-                         if (idx !== selectedIncident) {
-                           console.log('🔄 Switching to different call - clearing conversation');
-                           setConversation([]);
-                           setInsights({
-                             summary: "",
-                             location: [],
-                             persons_described: [],
-                             additional_info: [],
-                             incident: {},
-                             time_info: {},
-                             new_information_found: false
-                           });
-                           // Reset insights extractor
-                           if (insightsExtractorRef.current) {
-                             insightsExtractorRef.current = getInsightsExtractor();
-                           }
-                         }
-                         
-                         setSelectedIncident(idx);
-                         // Set the caller number for WebSocket connection
-                         if (call.phone && call.isLive) {
-                           setSelectedCallerNumber(call.phone);
-                           setIsLiveCall(true);
-                           console.log('📞 Selected live call:', call.phone);
-                         } else {
-                           setSelectedCallerNumber(null);
-                           setIsLiveCall(false);
-                         }
-                       }}>
+                       onClick={() => handleIncidentClick(idx)}>
                      {idx === selectedIncident && <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#5B5FED]"></div>}
                      <div className="flex items-start gap-3">
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${call.isLive ? 'bg-blue-900/30 text-blue-400' : 'bg-gray-800 text-gray-400'}`}>
@@ -2497,7 +2950,7 @@ export const Dashboard = () => {
                   <div>
                      <h2 className="text-base font-semibold text-white">{calls[selectedIncident]?.phone || "Select a Call"}</h2>
                      <div className="flex items-center gap-2 text-[11px] text-gray-500">
-                        <span>{calls[selectedIncident]?.isLive ? "Incoming Call" : "Past Call"}</span>
+                        <span>{isLiveCall ? "Incoming Call" : "Past Call"}</span>
                         <span className="w-1 h-1 rounded-full bg-gray-600"></span>
                         <div className="flex items-center gap-1 text-gray-400 bg-[#1a1a1a] px-1.5 py-0.5 rounded border border-[#333]">
                            Uncategorized <ChevronDown className="w-3 h-3" />
@@ -2599,12 +3052,12 @@ export const Dashboard = () => {
                </div>
                <div className="mt-3 flex items-center gap-2">
                   <div className="flex items-center gap-1.5">
-                     <div className={`w-2 h-2 rounded-full ${calls[selectedIncident]?.isLive ? 'bg-red-500 animate-pulse' : 'bg-gray-500'}`}></div>
-                     <span className="text-xs font-bold text-white">{calls[selectedIncident]?.isLive ? 'LIVE' : 'RECORDED'}</span>
+                     <div className={`w-2 h-2 rounded-full ${isLiveCall ? 'bg-red-500 animate-pulse' : 'bg-gray-500'}`}></div>
+                     <span className="text-xs font-bold text-white">{isLiveCall ? 'LIVE' : 'RECORDED'}</span>
                   </div>
                   <div className="flex-1 h-1 bg-[#1a1a1a] rounded-full overflow-hidden">
                      <div className={`h-full bg-[#5B5FED] transition-all duration-300 ${
-                        calls[selectedIncident]?.isLive ? 'w-full' : 'w-1/3'
+                        isLiveCall ? 'w-full' : 'w-1/3'
                      }`}></div>
                   </div>
                   <Volume2 className="w-4 h-4 text-gray-400" />
@@ -2668,7 +3121,7 @@ export const Dashboard = () => {
             </div>
 
             {/* Suggested Question - Shows one at a time above Talk button */}
-            {calls[selectedIncident]?.isLive && protocolQuestions.filter(q => !q.isAsked).length > 0 && (
+            {isLiveCall && protocolQuestions.filter(q => !q.isAsked).length > 0 && (
                <div className="px-6 py-3 border-t border-[#2a2a2a]/50 bg-[#0a0a0a]">
                   <div className="bg-gradient-to-r from-[#5B5FED]/10 to-[#5B5FED]/5 border border-[#5B5FED]/30 rounded-lg p-3">
                      <div className="flex items-start gap-3">
@@ -2713,7 +3166,7 @@ export const Dashboard = () => {
             )}
 
             {/* Microphone Button for Live Calls */}
-            {calls[selectedIncident]?.isLive && (
+            {isLiveCall && (
                <div className="px-6 py-3 border-t border-[#2a2a2a] bg-[#0a0a0a] shrink-0">
                   <Button
                      onClick={toggleMicrophone}
@@ -2759,41 +3212,61 @@ export const Dashboard = () => {
             <div 
                id="location-section"
                className={`border-b border-[#2a2a2a] flex flex-col min-h-[300px] ${
-                  calls[selectedIncident]?.phone && locationData[calls[selectedIncident].phone]
+                  calls[selectedIncident]?.call_sid && locationData[calls[selectedIncident].call_sid]
                      ? 'p-0'
                      : 'p-6 items-center justify-center text-center'
                }`}
             >
-               {calls[selectedIncident]?.phone && locationData[calls[selectedIncident].phone] ? (
-                  // Show map when location data is available
-                  <div className="h-full w-full bg-[#1a1a1a] overflow-hidden relative flex-1">
-                     <MapView 
-                        latitude={locationData[calls[selectedIncident].phone].latitude} 
-                        longitude={locationData[calls[selectedIncident].phone].longitude} 
-                     />
-                  </div>
-               ) : (
-                  // Show request button when no location data
-                  <>
-                     <div className="text-sm text-gray-400 mb-4">Send a link via SMS to receive live GPS location</div>
-                     <Button 
-                        onClick={() => {
-                           if (calls[selectedIncident]?.phone) {
-                              handleSendTrackingLink(calls[selectedIncident].phone);
-                           } else {
-                              toast({
-                                 title: "Error",
-                                 description: "No phone number available for this call",
-                                 variant: "destructive"
-                              });
-                           }
-                        }}
-                        className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white px-6 h-10 rounded-md font-medium"
-                     >
-                        Request Live Location
-                     </Button>
-                  </>
-               )}
+               {(() => {
+                  const currentCall = calls[selectedIncident];
+                  const hasLocation = currentCall?.call_sid && locationData[currentCall.call_sid];
+                  
+                  console.log('🗺️ Location Section Render:', {
+                     selectedIncident,
+                     currentCallSid: currentCall?.call_sid,
+                     hasLocation,
+                     locationData: locationData[currentCall?.call_sid || '']
+                  });
+                  
+                  return hasLocation ? (
+                     // Show map when location data is available
+                     <div className="h-full w-full bg-[#1a1a1a] overflow-hidden relative flex-1">
+                        <div className="p-4 bg-[#0a0a0a] border-b border-[#2a2a2a]">
+                           <div className="text-sm text-gray-400">📍 Live Location</div>
+                           {locationData[currentCall.call_sid].address && (
+                              <div className="text-xs text-gray-500 mt-1">
+                                 {locationData[currentCall.call_sid].address}
+                              </div>
+                           )}
+                        </div>
+                        <MapView 
+                           latitude={locationData[currentCall.call_sid].latitude} 
+                           longitude={locationData[currentCall.call_sid].longitude} 
+                        />
+                     </div>
+                  ) : (
+                     // Show request button when no location data
+                     <>
+                        <div className="text-sm text-gray-400 mb-4">Send a link via SMS to receive live GPS location</div>
+                        <Button 
+                           onClick={() => {
+                              if (currentCall?.phone) {
+                                 handleSendTrackingLink(currentCall.phone);
+                              } else {
+                                 toast({
+                                    title: "Error",
+                                    description: "No phone number available for this call",
+                                    variant: "destructive"
+                                 });
+                              }
+                           }}
+                           className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white px-6 h-10 rounded-md font-medium"
+                        >
+                           Request Live Location
+                        </Button>
+                     </>
+                  );
+               })()}
             </div>
 
             {/* Tabs Section with Resize Handle */}
@@ -3772,15 +4245,15 @@ export const Dashboard = () => {
                         <span className="text-sm font-medium">Default Language</span>
                      </button>
                      <button 
-                        onClick={() => setActiveSettingsSection('storage')}
+                        onClick={() => setActiveSettingsSection('database')}
                         className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
-                           activeSettingsSection === 'storage' 
+                           activeSettingsSection === 'database' 
                               ? 'bg-[#5B5FED]/10 text-[#5B5FED]' 
                               : 'text-gray-400 hover:bg-[#2a2a2a] hover:text-white'
                         }`}
                      >
                         <Trash2 className="w-4 h-4" />
-                        <span className="text-sm font-medium">Clear Storage</span>
+                        <span className="text-sm font-medium">Clear Database</span>
                      </button>
                   </nav>
                </div>
@@ -3923,42 +4396,44 @@ export const Dashboard = () => {
                            </div>
                         )}
 
-                        {/* Clear Local Storage Section */}
-                        {activeSettingsSection === 'storage' && (
+                        {/* Clear Database Section */}
+                        {activeSettingsSection === 'database' && (
                            <div className="bg-[#1a1a1a] border border-red-900/30 rounded-lg p-6">
                               <div className="flex items-center gap-3 mb-6">
                                  <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center">
                                     <Trash2 className="w-5 h-5 text-red-500" />
                                  </div>
                                  <div>
-                                    <h3 className="text-lg font-semibold text-white">Clear Local Storage</h3>
-                                    <p className="text-sm text-red-400/70">Remove all cached data and preferences</p>
+                                    <h3 className="text-lg font-semibold text-white">Factory Reset</h3>
+                                    <p className="text-sm text-red-400/70">Permanently delete all data from the database</p>
                                  </div>
                               </div>
                               
                               <div className="space-y-4">
                                  <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-4">
                                     <p className="text-sm text-gray-300 mb-3">
-                                       This will clear all local data including:
+                                       This will permanently delete from PostgreSQL database:
                                     </p>
                                     <ul className="text-sm text-gray-400 space-y-1 ml-4">
-                                       <li>• All call records and transcriptions</li>
-                                       <li>• Training sessions and evaluations</li>
-                                       <li>• Conversation history and insights</li>
-                                       <li>• User preferences and settings</li>
+                                       <li>• All call records and metadata</li>
+                                       <li>• All transcripts and translations</li>
+                                       <li>• All insights and protocol questions</li>
+                                       <li>• All location data</li>
+                                       <li>• All login logs</li>
+                                       <li>• All local browser storage</li>
                                     </ul>
                                     <p className="text-xs text-red-400 mt-3">
-                                       ⚠️ This action cannot be undone. The page will reload automatically.
+                                       ⚠️ WARNING: This action is IRREVERSIBLE. All data will be permanently deleted from the server.
                                     </p>
                                  </div>
                                  
                                  <Button 
-                                    onClick={handleClearStorage}
+                                    onClick={handleClearDatabase}
                                     variant="destructive"
                                     className="w-full sm:w-auto"
                                  >
                                     <Trash2 className="w-4 h-4 mr-2" />
-                                    Clear Local Storage
+                                    Factory Reset (Delete All Data)
                                  </Button>
                               </div>
                            </div>

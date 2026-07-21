@@ -1,0 +1,12 @@
+[20:43:31] [CALLER]: I'm using a voice assistant to convert your voice to text and respond to you.
+[20:43:35] [CALLER]: If you want to continue, please stay on the call.
+[20:43:40] [CALLER]: That is emergency.
+[20:43:51] [CALLER]: There has been a murderer.
+[20:44:04] [CALLER]: He is killing using his gun.
+[20:44:19] [CALLER]: Yes. I am safe right now.
+[20:44:29] [CALLER]: But he might come near near
+[20:44:29] [CALLER]: time.
+[20:44:42] [CALLER]: Please do it woman running.
+[20:44:46] [CALLER]: Fast.
+[20:45:08] [CALLER]: Sure.
+[20:45:32] [CALLER]: Thank you.

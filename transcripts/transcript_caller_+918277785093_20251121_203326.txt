@@ -1,0 +1,11 @@
+[20:31:26] [CALLER]: I'm using a voice assistant to convert your voice
+[20:31:27] [CALLER]: to text and respond to you.
+[20:31:31] [CALLER]: If you want to continue, please stay on the call.
+[20:31:40] [CALLER]: Help help. Someone is trying to shoot me.
+[20:32:03] [CALLER]: It's near Mangalore Market.
+[20:32:23] [CALLER]: Yes. It's near a sweet shop.
+[20:32:43] [CALLER]: No. I am alright.
+[20:32:50] [CALLER]: I am in a house.
+[20:32:53] [CALLER]: Locked.
+[20:33:10] [CALLER]: Sure. I can send it.
+[20:33:25] [CALLER]: Thank you.

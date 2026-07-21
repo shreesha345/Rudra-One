@@ -19,9 +19,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Environment variables
-TWILIO_ACCOUNT_SID = os.getenv("VITE_TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("VITE_TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.getenv("VITE_TWILIO_PHONE_NUMBER")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID") or os.getenv("VITE_TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN") or os.getenv("VITE_TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER") or os.getenv("VITE_TWILIO_PHONE_NUMBER")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 
@@ -34,6 +34,8 @@ class TwilioSMSService:
         self.gemini_client = None
         
         # Initialize Twilio
+        logger.info(f"Attempting to initialize Twilio with SID: {'Present' if TWILIO_ACCOUNT_SID else 'Missing'} and Token: {'Present' if TWILIO_AUTH_TOKEN else 'Missing'}")
+        
         if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
             try:
                 from twilio.rest import Client
@@ -200,6 +202,51 @@ Time: {time_info.get('occurred_at', 'Now')}"""
                 'status': 'error',
                 'message': f'Failed to send SMS: {str(e)}'
             }
+        
+    def send_raw_sms(self, to_number: str, body: str) -> Dict:
+        """
+        Send a raw SMS message
+        
+        Args:
+            to_number: Recipient phone number
+            body: Message body
+            
+        Returns:
+            Dictionary with status and message
+        """
+        if not self.twilio_client:
+            return {
+                'status': 'error',
+                'message': 'Twilio client not initialized'
+            }
+        
+        if not TWILIO_PHONE_NUMBER:
+            return {
+                'status': 'error',
+                'message': 'Twilio phone number not configured'
+            }
+            
+        try:
+            message = self.twilio_client.messages.create(
+                body=body,
+                from_=TWILIO_PHONE_NUMBER,
+                to=to_number
+            )
+            
+            logger.info(f"✅ Raw SMS sent successfully to {to_number}, SID: {message.sid}")
+            
+            return {
+                'status': 'success',
+                'message': 'SMS sent successfully',
+                'message_sid': message.sid
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to send SMS: {e}")
+            return {
+                'status': 'error',
+                'message': f'Failed to send SMS: {str(e)}'
+            }
 
 
 # Create global instance
@@ -233,6 +280,13 @@ def send_emergency_alert(
         emergency_type=emergency_type,
         station_name=station_name
     )
+
+
+def send_sms(to_number: str, body: str) -> Dict:
+    """
+    Convenience function to send raw SMS
+    """
+    return sms_service.send_raw_sms(to_number, body)
 
 
 if __name__ == "__main__":

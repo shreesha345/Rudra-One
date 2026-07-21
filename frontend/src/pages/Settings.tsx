@@ -6,11 +6,26 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Phone, Languages, Trash2, Save, ArrowLeft } from 'lucide-react';
+import { Loader2, Phone, Languages, Trash2, Save, ArrowLeft, Siren } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { apiService } from '@/services/apiService';
 
 interface SettingsData {
   call_forward_number: string | null;
   default_translation_language: string;
+  emergency_hospital?: string | null;
+  emergency_police?: string | null;
+  emergency_fire?: string | null;
 }
 
 const INDIAN_LANGUAGES = [
@@ -26,6 +41,8 @@ const INDIAN_LANGUAGES = [
   { code: 'pa', name: 'Punjabi (ਪੰਜਾਬੀ)' },
   { code: 'or', name: 'Odia (ଓଡ଼ିଆ)' },
 ];
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function Settings() {
   const navigate = useNavigate();
@@ -44,7 +61,7 @@ export default function Settings() {
   const loadSettings = async () => {
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/api/settings');
+      const response = await fetch(`${API_BASE_URL}/api/settings`);
       const data = await response.json();
       
       if (data.status === 'success' && data.settings) {
@@ -65,7 +82,7 @@ export default function Settings() {
   const saveSettings = async () => {
     setSaving(true);
     try {
-      const response = await fetch('http://localhost:8000/api/settings', {
+      const response = await fetch(`${API_BASE_URL}/api/settings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -80,6 +97,9 @@ export default function Settings() {
           title: 'Success',
           description: 'Settings saved successfully',
         });
+        
+        // Dispatch custom event to notify Dashboard to refresh settings
+        window.dispatchEvent(new CustomEvent('settings-updated'));
       } else {
         throw new Error(data.message || 'Failed to save settings');
       }
@@ -95,18 +115,30 @@ export default function Settings() {
     }
   };
 
-  const clearLocalStorage = () => {
-    if (confirm('Are you sure you want to clear all local storage? This will reset all local preferences and cache.')) {
-      localStorage.clear();
-      toast({
-        title: 'Local Storage Cleared',
-        description: 'All local data has been cleared successfully',
-      });
+  const handleClearDatabase = async () => {
+    try {
+      setLoading(true);
+      await apiService.clearDatabase();
       
-      // Reload the page to reset the app state
+      // Also clear local storage to ensure a complete reset
+      localStorage.clear();
+      
+      toast({
+        title: "Success",
+        description: "Database and local storage cleared successfully",
+      });
+      // Reload to reflect changes
       setTimeout(() => {
         window.location.reload();
       }, 1000);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to clear database",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -166,6 +198,63 @@ export default function Settings() {
           </CardContent>
         </Card>
 
+        {/* Emergency Contacts */}
+        <Card className="bg-[#1a1a1a] border-gray-800">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Siren className="w-5 h-5 text-[#5B5FED]" />
+              <CardTitle className="text-white">Emergency Contacts</CardTitle>
+            </div>
+            <CardDescription>
+              Configure the phone numbers for emergency services dispatch
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="hospital-number" className="text-gray-300">
+                Hospital / Ambulance
+              </Label>
+              <Input
+                id="hospital-number"
+                type="tel"
+                placeholder="+1234567890"
+                value={settings.emergency_hospital || ''}
+                onChange={(e) => setSettings({ ...settings, emergency_hospital: e.target.value || null })}
+                className="bg-[#0a0a0a] border-gray-700 text-white placeholder:text-gray-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="police-number" className="text-gray-300">
+                Police Department
+              </Label>
+              <Input
+                id="police-number"
+                type="tel"
+                placeholder="+1234567890"
+                value={settings.emergency_police || ''}
+                onChange={(e) => setSettings({ ...settings, emergency_police: e.target.value || null })}
+                className="bg-[#0a0a0a] border-gray-700 text-white placeholder:text-gray-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="fire-number" className="text-gray-300">
+                Fire Department
+              </Label>
+              <Input
+                id="fire-number"
+                type="tel"
+                placeholder="+1234567890"
+                value={settings.emergency_fire || ''}
+                onChange={(e) => setSettings({ ...settings, emergency_fire: e.target.value || null })}
+                className="bg-[#0a0a0a] border-gray-700 text-white placeholder:text-gray-500"
+              />
+            </div>
+            <p className="text-xs text-gray-500">
+              These numbers will be used when dispatching emergency services via SMS or Call.
+            </p>
+          </CardContent>
+        </Card>
+
         {/* Default Translation Language */}
         <Card className="bg-[#1a1a1a] border-gray-800">
           <CardHeader>
@@ -211,29 +300,42 @@ export default function Settings() {
           </CardContent>
         </Card>
 
-        {/* Clear Local Storage */}
+        {/* System Reset */}
         <Card className="bg-[#1a1a1a] border-gray-800 border-red-900/30">
           <CardHeader>
             <div className="flex items-center gap-2">
               <Trash2 className="w-5 h-5 text-red-500" />
-              <CardTitle className="text-white">Clear Local Storage</CardTitle>
+              <CardTitle className="text-white">System Reset</CardTitle>
             </div>
             <CardDescription className="text-red-400/70">
-              Remove all cached data and preferences stored locally
+              Permanently delete all data from the database and clear local storage
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button
-              variant="destructive"
-              onClick={clearLocalStorage}
-              className="w-full sm:w-auto"
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              Clear Local Storage
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" className="w-full sm:w-auto">
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Factory Reset (Clear All Data)
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent className="bg-[#1a1a1a] border-gray-800 text-white">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                  <AlertDialogDescription className="text-gray-400">
+                    This action cannot be undone. This will permanently delete all call history, transcripts, and insights from the database, AND clear all local storage.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel className="bg-transparent border-gray-700 text-white hover:bg-gray-800">Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleClearDatabase} className="bg-red-600 hover:bg-red-700 text-white">
+                    Yes, delete everything
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
             <p className="text-xs text-gray-500 mt-3">
-              Warning: This will clear all local data including cached call records, preferences, and session information. 
-              The page will reload automatically.
+              Warning: This will permanently remove all data from the server database and your local browser. This action is irreversible.
             </p>
           </CardContent>
         </Card>

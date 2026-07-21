@@ -62,6 +62,22 @@ export const apiService = {
     }
   },
 
+  async login(username: string, password: string): Promise<{ message: string; agent_id: string }> {
+    const response = await fetch(`${API_BASE_URL}/api/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ username, password }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Login failed');
+    }
+
+    return response.json();
+  },
+
   getWebSocketUrl(endpoint: string): string {
     const wsProtocol = API_BASE_URL.startsWith('https') ? 'wss' : 'ws';
     const baseUrl = API_BASE_URL.replace(/^https?:\/\//, '');
@@ -70,5 +86,32 @@ export const apiService = {
 
   getBaseUrl(): string {
     return API_BASE_URL;
+  },
+
+  async saveInsights(callSid: string, insights: any): Promise<void> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/calls/${callSid}/insights`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(insights),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save insights');
+      }
+    } catch (error) {
+      console.error('Error saving insights:', error);
+    }
+  },
+
+  async clearDatabase(): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/api/database/clear`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      throw new Error('Failed to clear database');
+    }
   },
 };

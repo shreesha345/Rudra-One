@@ -1,0 +1,6 @@
+[00:26:59] [CALLER]: I'm using a voice assistant to convert your voice to text and respond
+[00:27:04] [CALLER]: to. If you want to continue, please stay on the call.
+[00:27:11] [CALLER]: Hello?
+[00:27:28] [CALLER]: Ten.
+[00:27:29] [CALLER]: Hello?
+[00:28:30] [CALLER]: Can you hear me?

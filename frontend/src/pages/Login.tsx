@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { apiService } from "@/services/apiService";
+import { useToast } from "@/hooks/use-toast";
 
 
 export const Login = () => {
@@ -8,6 +10,7 @@ export const Login = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [showPasswordField, setShowPasswordField] = useState(false);
     const navigate = useNavigate();
+    const { toast } = useToast();
 
     const handleContinue = (e: React.FormEvent) => {
         e.preventDefault();
@@ -29,12 +32,19 @@ export const Login = () => {
             return;
         }
 
-        // Simulate login process
-        setTimeout(() => {
-            setIsLoading(false);
-            // For now, accept any credentials and redirect to dashboard
+        try {
+            await apiService.login(agentId, password);
             navigate("/dashboard");
-        }, 1500);
+        } catch (error) {
+            console.error("Login error:", error);
+            toast({
+                title: "Login Failed",
+                description: "Invalid credentials. Please try again.",
+                variant: "destructive",
+            });
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     if (isLoading) {

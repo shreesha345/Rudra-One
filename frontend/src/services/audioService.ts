@@ -11,8 +11,8 @@ export class AudioService {
   private isPlaying = false;
   private nextPlayTime = 0;
   private sampleRate = 16000; // 16kHz wideband (phone audio upsampled from 8kHz)
-  private minBufferSize = 3; // Minimum buffers before starting playback (prevents underruns)
-  private maxBufferSize = 15; // Maximum buffers to prevent excessive latency
+  private minBufferSize = 2; // Minimum buffers before starting playback (reduced for lower latency)
+  private maxBufferSize = 8; // Maximum buffers to prevent excessive latency (reduced from 15)
 
   async startRecording(onAudioData: (audioData: Float32Array) => void): Promise<void> {
     try {
@@ -47,8 +47,8 @@ export class AudioService {
       this.audioContext = new AudioContext({ sampleRate: 16000 });
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
-      // Use 2048 buffer for more stable audio (less crackling)
-      this.processor = this.audioContext.createScriptProcessor(2048, 1, 1);
+      // Use 1024 buffer for lower latency (reduced from 2048)
+      this.processor = this.audioContext.createScriptProcessor(1024, 1, 1);
 
       this.processor.onaudioprocess = (event) => {
         if (this.isRecording) {
