@@ -1,5 +1,0 @@
-[00:44:13] [CALLER]: I'm using a voice assistant to convert your voice to text and respond to you.
-[00:44:16] [CALLER]: If you want to continue, please stay on the call.
-[00:44:45] [CALLER]: Hello. Could you send me the link first?
-[00:45:27] [CALLER]: That has been a x
-[00:45:28] [CALLER]: accident of a plane near Mangalore Balmetto Ground.

@@ -1,5 +1,0 @@
-[01:24:07] [CALLER]: I'm using a voice assistant to convert your voice to text
-[01:24:07] [CALLER]: and respond to you.
-[01:24:11] [CALLER]: If you want to continue, please stay on the call.
-[01:24:15] [CALLER]: There has been a accident.
-[01:24:34] [CALLER]: It's a plane crash.

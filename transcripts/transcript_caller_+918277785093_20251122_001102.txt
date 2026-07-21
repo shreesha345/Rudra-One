@@ -1,4 +1,0 @@
-[00:08:43] [CALLER]: I'm using a voice assistant to convert your voice to text and respond to you.
-[00:08:46] [CALLER]: If you want to continue, please stay on the call.
-[00:09:45] [CALLER]: There is a fight happening in my house.
-[00:09:55] [CALLER]: And they have done.

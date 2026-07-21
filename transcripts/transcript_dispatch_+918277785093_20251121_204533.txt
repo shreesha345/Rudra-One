@@ -1,8 +1,0 @@
-[20:44:06] [DISPATCH]: Are you safe right now?
-[20:44:09] [DISPATCH]: You provide me the MSAT location of this incident?
-[20:44:51] [DISPATCH]: Okay. So right now, we'll be sending the police, and
-[20:44:56] [DISPATCH]: law enforcement. So please do check your SMS, sir, to get
-[20:44:59] [DISPATCH]: as a proper location.
-[20:45:02] [DISPATCH]: So that we can accurately track you and come here.
-[20:45:05] [DISPATCH]: Please, sir.
-[20:45:25] [DISPATCH]: Thank you. We got the location. We'll be immediately coming there.

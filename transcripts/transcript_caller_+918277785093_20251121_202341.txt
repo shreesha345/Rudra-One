@@ -1,2 +1,0 @@
-[20:23:32] [CALLER]: I'm using a voice assistant to convert your voice to text and respond to you.
-[20:23:36] [CALLER]: If you want to continue, please stay on the call.

@@ -1,8 +1,0 @@
-[01:12:03] [CALLER]: I'm using a voice assistant to convert your voice to text
-[01:12:03] [CALLER]: and respond to you.
-[01:12:07] [CALLER]: If you want to continue, please stay on the call.
-[01:12:25] [CALLER]: Hello. There is a car accident which has gone
-[01:12:27] [CALLER]: fired and five people are inside the car.
-[01:12:58] [CALLER]: Good. Sure. I can provide.
-[01:13:11] [CALLER]: It's near Mandalore Railway Station.
-[01:13:26] [CALLER]: Sure.

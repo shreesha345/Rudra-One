@@ -1,8 +1,0 @@
-[01:00:28] [CALLER]: I'm using a voice assistant to convert your voice to text and
-[01:00:28] [CALLER]: respond to you.
-[01:00:32] [CALLER]: If you want to continue, please stay on the call.
-[01:00:47] [CALLER]: There is a plane accident on my house, and I am stuck inside.
-[01:01:11] [CALLER]: It's near McClure City Centre Mall.
-[01:01:29] [CALLER]: Yes.
-[01:01:39] [CALLER]: I am in that location right now.
-[01:02:05] [CALLER]: Sure. Send that link.
