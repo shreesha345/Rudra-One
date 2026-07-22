@@ -882,6 +882,7 @@ class DeepgramRealtimeTranscriber:
         self.ws = None
         self.is_active = False
         self.full_transcript = []
+        self.transcript_buffer = []  # Buffer for transcripts to be saved to DB
         self.audio_queue: asyncio.Queue = asyncio.Queue()
         self._send_task = None
         self._recv_task = None
@@ -901,6 +902,47 @@ class DeepgramRealtimeTranscriber:
             f"&punctuate=true"
             f"&smart_format=true"
         )
+
+    async def buffer_transcript(self, speaker: str, message: str, translated_message: str = None, language: str = None):
+        """Buffer transcript to be saved to DB later"""
+        if not self.call_sid:
+            return
+            
+        self.transcript_buffer.append({
+            "call_sid": self.call_sid,
+            "speaker": speaker,
+            "message": message,
+            "translated_message": translated_message,
+            "language": language,
+            "is_final": True,
+            "timestamp": datetime.now()
+        })
+        logger.info(f"📥 Buffered transcript for {self.call_sid}: {speaker} (Buffer size: {len(self.transcript_buffer)})")
+
+    async def flush_transcripts(self):
+        """Flush buffered transcripts to database"""
+        if not self.transcript_buffer:
+            return
+
+        logger.info(f"💾 Flushing {len(self.transcript_buffer)} transcripts to database for {self.call_sid}")
+        try:
+            async with AsyncSessionLocal() as db:
+                for item in self.transcript_buffer:
+                    transcript = Transcript(
+                        call_sid=item["call_sid"],
+                        speaker=item["speaker"],
+                        message=item["message"],
+                        translated_message=item["translated_message"],
+                        language=item["language"],
+                        is_final=item["is_final"],
+                        timestamp=item["timestamp"]
+                    )
+                    db.add(transcript)
+                await db.commit()
+                logger.info(f"✅ Successfully flushed transcripts to DB")
+                self.transcript_buffer = []
+        except Exception as e:
+            logger.error(f"❌ Error flushing transcripts to DB: {e}")
 
     async def broadcast_to_clients(self, message_data: dict):
         """Broadcast transcription to connected clients"""
@@ -966,11 +1008,11 @@ class DeepgramRealtimeTranscriber:
                     "translation_needed": False
                 })
                 
-                # Save to database
+                # Save to database (buffered)
                 if self.call_sid:
-                    asyncio.create_task(save_transcript_to_db(
-                        self.call_sid, "Dispatch", transcript, None, dispatcher_lang
-                    ))
+                    await self.buffer_transcript(
+                        "Dispatch", transcript, None, dispatcher_lang
+                    )
                 return
             
             # Languages differ - translation needed
@@ -997,11 +1039,11 @@ class DeepgramRealtimeTranscriber:
                         "translation_needed": True
                     })
                     
-                    # Save to database
+                    # Save to database (buffered)
                     if self.call_sid:
-                        asyncio.create_task(save_transcript_to_db(
-                            self.call_sid, "Dispatch", transcript, translated_text, dispatcher_lang
-                        ))
+                        await self.buffer_transcript(
+                            "Dispatch", transcript, translated_text, dispatcher_lang
+                        )
                     
                     # Convert translated text to speech in caller's language and queue for phone
                     logger.info(f"🎤 Starting TTS for translated text in {caller_lang}: {translated_text[:50]}...")
@@ -1095,11 +1137,11 @@ class DeepgramRealtimeTranscriber:
                     "translation_needed": False
                 })
                 
-                # Save to database
+                # Save to database (buffered)
                 if self.call_sid:
-                    asyncio.create_task(save_transcript_to_db(
-                        self.call_sid, "Caller", transcript, None, caller_lang
-                    ))
+                    await self.buffer_transcript(
+                        "Caller", transcript, None, caller_lang
+                    )
                 return
 
             # Translation needed (Caller -> Dispatcher)
@@ -1122,11 +1164,11 @@ class DeepgramRealtimeTranscriber:
                     "translation_needed": True
                 })
                 
-                # Save to database
+                # Save to database (buffered)
                 if self.call_sid:
-                    asyncio.create_task(save_transcript_to_db(
-                        self.call_sid, "Caller", transcript, translated_text, caller_lang
-                    ))
+                    await self.buffer_transcript(
+                        "Caller", transcript, translated_text, caller_lang
+                    )
             else:
                 # Translation failed or same
                 await self.broadcast_to_clients({
@@ -1140,11 +1182,11 @@ class DeepgramRealtimeTranscriber:
                     "translation_needed": False
                 })
                 
-                # Save to database
+                # Save to database (buffered)
                 if self.call_sid:
-                    asyncio.create_task(save_transcript_to_db(
-                        self.call_sid, "Caller", transcript, None, caller_lang
-                    ))
+                    await self.buffer_transcript(
+                        "Caller", transcript, None, caller_lang
+                    )
 
         except Exception as e:
             logger.error(f"❌ Error in caller translation: {e}")
@@ -1345,20 +1387,24 @@ class DeepgramRealtimeTranscriber:
         except Exception:
             pass
         
+        # Flush any remaining transcripts to DB
+        await self.flush_transcripts()
+        
         logger.info(f"🔒 Deepgram session closed for {self.speaker_label}")
 
     def save_transcript(self, filename: str):
-        """Save transcript to file"""
-        if self.full_transcript:
-            transcripts_dir = os.getenv("TRANSCRIPTS_DIR", "transcripts")
-            os.makedirs(transcripts_dir, exist_ok=True)
-            filepath = os.path.join(transcripts_dir, filename)
-            try:
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write("\n".join(self.full_transcript))
-                logger.info(f"📝 {self.speaker_label} transcript saved: {filepath}")
-            except Exception as e:
-                logger.error(f"Failed to save transcript: {e}")
+        """Save transcript to file - DISABLED (using DB only)"""
+        pass
+        # if self.full_transcript:
+        #     transcripts_dir = os.getenv("TRANSCRIPTS_DIR", "transcripts")
+        #     os.makedirs(transcripts_dir, exist_ok=True)
+        #     filepath = os.path.join(transcripts_dir, filename)
+        #     try:
+        #         with open(filepath, "w", encoding="utf-8") as f:
+        #             f.write("\n".join(self.full_transcript))
+        #         logger.info(f"📝 {self.speaker_label} transcript saved: {filepath}")
+        #     except Exception as e:
+        #         logger.error(f"Failed to save transcript: {e}")
 
     async def handle_ai_response(self, transcript: str):
         """Handle AI Agent response generation"""
@@ -1401,11 +1447,11 @@ class DeepgramRealtimeTranscriber:
                     "translation_needed": False
                 })
 
-                # Save to database as AI response
+                # Save to database as AI response (buffered)
                 if self.call_sid:
-                    asyncio.create_task(save_transcript_to_db(
-                        self.call_sid, "AI Agent", response_text, None, "en"
-                    ))
+                    await self.buffer_transcript(
+                        "AI Agent", response_text, None, "en"
+                    )
                 
                 # Then convert to speech and queue audio
                 await convert_and_queue_ai_audio(response_text, "en", self.caller_number)
@@ -2669,10 +2715,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         "translation_needed": False
                     })
                     
-                    # Save greeting to DB
-                    asyncio.create_task(save_transcript_to_db(
-                        call_sid, "AI Agent", greeting, None, "en"
-                    ))
+                    # Save greeting to DB (buffered)
+                    await phone_transcriber.buffer_transcript(
+                        "AI Agent", greeting, None, "en"
+                    )
                     
                     # Then generate and queue audio
                     await convert_and_queue_ai_audio(greeting, "en", caller_number)
@@ -2878,24 +2924,38 @@ async def websocket_endpoint(websocket: WebSocket):
 SETTINGS_FILE = "agency_settings.json"
 
 def load_settings_file_fallback() -> dict:
-    try:
-        if os.path.exists(SETTINGS_FILE):
-            with open(SETTINGS_FILE, 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading settings file fallback: {e}")
+    # Local storage disabled - use DB only
     return {}
+    # try:
+    #     if os.path.exists(SETTINGS_FILE):
+    #         with open(SETTINGS_FILE, 'r') as f:
+    #             return json.load(f)
+    # except Exception as e:
+    #     logger.error(f"Error loading settings file fallback: {e}")
+    # return {}
 
 async def load_settings_db() -> dict:
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(AgencySetting).limit(1))
         row = result.scalar_one_or_none()
+        
+        # If no settings exist, create default row with the default number
         if not row:
             row = AgencySetting()
+            row.call_forward_number = "+918277785093"  # Default number
             session.add(row)
             await session.commit()
             await session.refresh(row)
-            logger.info("🆕 Created default AgencySetting row")
+            logger.info("🆕 Created default AgencySetting row with default number")
+        
+        # If settings exist but call_forward_number is not set, set the default
+        elif row.call_forward_number is None:
+            row.call_forward_number = "+918277785093"  # Default number
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            logger.info("🆕 Updated AgencySetting row with default number")
+
         return {
             "call_forward_number": row.call_forward_number,
             "default_translation_language": row.default_translation_language or "en",

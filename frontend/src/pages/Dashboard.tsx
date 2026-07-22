@@ -255,11 +255,21 @@ export const Dashboard = () => {
           }
 
           // Update emergency contacts from settings
+          const hospital = data.settings.emergency_hospital || '';
+          const police = data.settings.emergency_police || '';
+          const fire = data.settings.emergency_fire || '';
+
           setEmergencyContacts({
-            hospital: data.settings.emergency_hospital || '',
-            police: data.settings.emergency_police || '',
-            fire: data.settings.emergency_fire || ''
+            hospital,
+            police,
+            fire
           });
+          
+          // Also update the individual state variables used in the settings panel
+          setHospitalNumber(hospital);
+          setPoliceNumber(police);
+          setFireNumber(fire);
+          
           console.log('🚑 Updated emergency contacts from settings');
         }
       } catch (error) {
@@ -1737,7 +1747,7 @@ export const Dashboard = () => {
   };
 
   // Save emergency numbers separately
-  const saveEmergencyNumbers = () => {
+  const saveEmergencyNumbers = async () => {
     // Basic validation: allow empty (disables), else must start with '+' and contain digits
     const entries: Array<[string, string]> = [
       ['Hospital', hospitalNumber],
@@ -1754,18 +1764,50 @@ export const Dashboard = () => {
         return;
       }
     }
-    setEmergencyContacts({
-      hospital: hospitalNumber,
-      fire: fireNumber,
-      police: policeNumber
-    });
-    localStorage.setItem('hospitalEmergencyNumber', hospitalNumber);
-    localStorage.setItem('fireEmergencyNumber', fireNumber);
-    localStorage.setItem('policeEmergencyNumber', policeNumber);
-    toast({
-      title: 'Emergency Numbers Saved',
-      description: 'Hospital, Fire, and Police contacts updated.'
-    });
+
+    setSavingSettings(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emergency_hospital: hospitalNumber || null,
+          emergency_fire: fireNumber || null,
+          emergency_police: policeNumber || null
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        setEmergencyContacts({
+          hospital: hospitalNumber,
+          fire: fireNumber,
+          police: policeNumber
+        });
+        
+        // Keep localStorage as backup/cache
+        localStorage.setItem('hospitalEmergencyNumber', hospitalNumber);
+        localStorage.setItem('fireEmergencyNumber', fireNumber);
+        localStorage.setItem('policeEmergencyNumber', policeNumber);
+        
+        toast({
+          title: 'Emergency Numbers Saved',
+          description: 'Hospital, Fire, and Police contacts updated to database.'
+        });
+      } else {
+        throw new Error(data.message || 'Failed to save settings');
+      }
+    } catch (error) {
+      console.error('Error saving emergency numbers:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to save emergency numbers to database',
+        variant: 'destructive'
+      });
+    } finally {
+      setSavingSettings(false);
+    }
   };
 
   // Save language settings
