@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 export interface TranscriptionMessage {
-  type: 'transcription' | 'connected' | 'keepalive' | 'call_started' | 'call_ended' | 'audio' | 'ai_transfer';
+  type: 'transcription' | 'connected' | 'keepalive' | 'call_started' | 'call_ended' | 'audio' | 'ai_transfer' | 'ai_stopped';
   speaker?: string;
   message?: string;
   timestamp: string;
@@ -39,13 +39,13 @@ export const useWebSocket = ({
   const shouldReconnectRef = useRef(true);
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 5;
-  
+
   // Store callbacks in refs to avoid recreating connect function
   const onMessageRef = useRef(onMessage);
   const onOpenRef = useRef(onOpen);
   const onCloseRef = useRef(onClose);
   const onErrorRef = useRef(onError);
-  
+
   useEffect(() => {
     onMessageRef.current = onMessage;
     onOpenRef.current = onOpen;
@@ -100,7 +100,7 @@ export const useWebSocket = ({
           // Exponential backoff: 3s, 6s, 12s, 24s, 48s
           const backoffDelay = reconnectInterval * Math.pow(2, reconnectAttemptsRef.current - 1);
           console.log(`Reconnect attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts} in ${backoffDelay}ms`);
-          
+
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
           }, backoffDelay);
@@ -123,7 +123,7 @@ export const useWebSocket = ({
       if (autoReconnect && shouldReconnectRef.current && url && reconnectAttemptsRef.current < maxReconnectAttempts) {
         reconnectAttemptsRef.current += 1;
         const backoffDelay = reconnectInterval * Math.pow(2, reconnectAttemptsRef.current - 1);
-        
+
         reconnectTimeoutRef.current = setTimeout(() => {
           console.log('Retrying connection after error...');
           connect();

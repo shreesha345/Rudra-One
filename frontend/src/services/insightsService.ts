@@ -30,7 +30,8 @@ Return a JSON object with the following structure:
     "time_info": {"duration": "15 minutes", "start_time": "approximately 15 minutes ago"},
     "additional_info": ["Multiple individuals trapped on balconies", "Third floor fully engulfed"],
     "new_information_found": true,
-    "summary": "Major fire at residential building in Sector 17, Gurgaon near Community Center. Fire originated from AC unit malfunction approximately 15 minutes ago. Third floor fully engulfed with multiple individuals trapped on balconies requiring immediate rescue."
+    "summary": "Major fire at residential building in Sector 17, Gurgaon near Community Center. Fire originated from AC unit malfunction approximately 15 minutes ago. Third floor fully engulfed with multiple individuals trapped on balconies requiring immediate rescue.",
+    "emergency_type": "fire"
 }
 
 LOCATION FORMATTING:
@@ -66,6 +67,25 @@ SUMMARY REQUIREMENTS:
 - Include: location, incident type, severity, timeline, and critical response needs
 - Use formal emergency services language
 - Avoid emojis, exclamation marks, or casual expressions
+
+EMERGENCY TYPE CLASSIFICATION (REQUIRED):
+- Classify EVERY incident into exactly ONE of three emergency types: "hospital", "police", or "fire"
+- This field is MANDATORY - always include "emergency_type" in your response
+- Classification rules:
+  * "hospital": Medical emergencies (injuries, bleeding, heart attacks, unconscious persons, breathing problems, poisoning, overdose, pregnancy complications, severe pain, medical assistance needed)
+  * "fire": Fire-related emergencies (building fires, vehicle fires, explosions, gas leaks, smoke, burning smell, fire hazards)
+  * "police": Criminal activities and public safety (crime, theft, robbery, burglary, assault, domestic violence, suspicious activity, threats, weapons, break-ins, kidnapping, harassment, stalking, missing persons, disturbances, noise complaints, traffic accidents with no injuries)
+- When multiple types apply, prioritize based on severity:
+  1. Life-threatening medical issues → "hospital"
+  2. Active fires or explosions → "fire"
+  3. Criminal activity, violence, or public safety → "police"
+- Examples:
+  * "Person bleeding heavily" → "hospital"
+  * "Building on fire" → "fire"
+  * "Someone breaking into my house" → "police"
+  * "Car accident with injuries" → "hospital"
+  * "Shooting incident" → "hospital" (if injuries mentioned) OR "police" (if no injuries mentioned)
+  * "Gas leak with fire" → "fire"
 `;
 
 export interface InsightsData {
@@ -88,6 +108,7 @@ export interface InsightsData {
   additional_info: string[];
   new_information_found: boolean;
   summary: string;
+  emergency_type?: 'hospital' | 'police' | 'fire';
 }
 
 export class InsightsExtractor {
@@ -97,29 +118,29 @@ export class InsightsExtractor {
 
   constructor(apiKey: string) {
     this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({ model: "gemini-flash-latest" });
+    this.model = this.genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     this.conversationHistory = new Map();
   }
 
   private buildExtractionPrompt(sentence: string, existingData?: InsightsData): string {
     let prompt = BASE_PROMPT;
-    
+
     if (existingData) {
       prompt += `\n\nEXISTING INFORMATION:\n${JSON.stringify(existingData, null, 2)}\nExtract NEW actionable info and integrate it.`;
     }
-    
+
     prompt += `\n\nCURRENT CALLER STATEMENT:\n"${sentence}"\nReturn valid JSON only.`;
-    
+
     return prompt;
   }
 
   private mergeListsUnique<T>(oldList: T[], newList: T[]): T[] {
     const result = [...oldList];
-    
+
     for (const item of newList) {
       // For objects, do deep comparison
       if (typeof item === 'object' && item !== null) {
-        const exists = result.some(existing => 
+        const exists = result.some(existing =>
           JSON.stringify(existing) === JSON.stringify(item)
         );
         if (!exists) {
@@ -132,7 +153,7 @@ export class InsightsExtractor {
         }
       }
     }
-    
+
     return result;
   }
 
@@ -186,6 +207,11 @@ export class InsightsExtractor {
       merged.summary = newData.summary;
     }
 
+    // Update emergency_type
+    if (newData.emergency_type) {
+      merged.emergency_type = newData.emergency_type;
+    }
+
     // Update new_information_found flag
     merged.new_information_found = newData.new_information_found ?? true;
 
@@ -199,7 +225,7 @@ export class InsightsExtractor {
   ): Promise<InsightsData> {
     // Get or initialize existing data
     let existingData = this.conversationHistory.get(callerId);
-    
+
     if (!existingData) {
       existingData = {
         persons_described: [],
@@ -209,10 +235,11 @@ export class InsightsExtractor {
         time_info: {},
         summary: "",
         new_information_found: false,
+        emergency_type: undefined,
       };
     }
 
-    if (callerName && !existingData.persons_described.some(p => 
+    if (callerName && !existingData.persons_described.some(p =>
       typeof p === 'object' && p.name === callerName
     )) {
       existingData.persons_described.push({ name: callerName, role: "caller" });
@@ -239,9 +266,9 @@ export class InsightsExtractor {
 
       const extractedData = JSON.parse(responseText) as Partial<InsightsData>;
       const mergedData = this.mergeData(existingData, extractedData);
-      
+
       this.conversationHistory.set(callerId, mergedData);
-      
+
       return mergedData;
     } catch (error) {
       console.error("Error processing sentence:", error);

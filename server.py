@@ -34,9 +34,14 @@ from google import genai
 # Import SMS service
 from twilio_sms_send import send_emergency_alert, send_sms
 from database import init_db, get_db, AsyncSessionLocal
-from models import User, LoginLog, Call, Transcript, CallInsight, LocationData
+from models import User, LoginLog, Call, Transcript, CallInsight, LocationData, AgencySetting
 from rudra_logic import RudraAgent
 from elevenlabs_tts import text_to_speech_elevenlabs
+
+# Import Twilio MediaStream routes for Gemini Live Voice integration
+# Import Twilio MediaStream routes for Gemini Live Voice integration
+# from twilio_routes import router as twilio_router
+from stations import get_nearest_station
 
 
 # Load environment variables
@@ -338,6 +343,7 @@ class EmergencySMSRequest(BaseModel):
     location_address: str = Field(..., description="Full address of emergency location")
     station_name: Optional[str] = Field(None, description="Name of emergency station")
     insights_data: dict = Field(..., description="Insights data from the call")
+    maps_link: Optional[str] = Field(None, description="Google Maps link for the location (optional)")
 
 
 class EmergencySMSResponse(BaseModel):
@@ -554,7 +560,8 @@ def update_twilio_webhook(domain):
         logger.error("⚠️  Twilio library not installed. Install with: pip install twilio")
         return False
     except Exception as e:
-        logger.error(f"⚠️  Failed to update Twilio webhook: {e}")
+        logger.warning(f"⚠️  Failed to update Twilio webhook (network/DNS issue - this is non-critical): {str(e)[:100]}")
+        logger.info("ℹ️  Server will continue without Twilio webhook update. Check internet connection if needed.")
         return False
 
 
@@ -1031,6 +1038,22 @@ class DeepgramRealtimeTranscriber:
                     "translation_error": str(trans_error)
                 })
                     
+            # Auto-stop AI agent when dispatcher speaks
+            if self.rudra_agent and not self.rudra_agent.call_transferred:
+                logger.info("🚨 Dispatcher spoke - stopping AI agent")
+                self.rudra_agent.call_transferred = True
+                self.rudra_agent.is_active = False
+                self.rudra_agent.has_been_transferred = True
+                
+                # Broadcast transfer event
+                if self.event_loop and self.event_loop.is_running():
+                    await self.broadcast_to_clients({
+                        "type": "ai_transfer",
+                        "call_sid": self.call_sid,
+                        "timestamp": datetime.now().isoformat(),
+                        "reason": "dispatcher_intervention"
+                    })
+
         except Exception as e:
             logger.error(f"❌ Error in dispatcher translation: {e}")
             import traceback
@@ -1646,12 +1669,12 @@ async def twiml_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
             # Initialize caller language from settings
             try:
-                settings = load_settings()
+                settings = await load_settings_db()
                 default_lang = settings.get("default_translation_language", "en")
                 caller_languages[From] = default_lang
-                logger.info(f"🌍 Initialized caller language for {From} to {default_lang}")
+                logger.info(f"🌍 Initialized caller language for {From} to {default_lang} (DB)")
             except Exception as e:
-                logger.error(f"Error initializing caller language: {e}")
+                logger.error(f"Error initializing caller language from DB: {e}")
             
             # Save call to database
             try:
@@ -1776,6 +1799,31 @@ async def transcription_websocket(websocket: WebSocket, caller_number: str):
             try:
                 # Add timeout to prevent hanging connections
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                
+                try:
+                    message = json.loads(data)
+                    # Handle "stop_ai" message from frontend
+                    if message.get("type") == "stop_ai":
+                        logger.info(f"🛑 Received stop_ai command for {caller_number}")
+                        # Find the active transcriber for this caller
+                        if caller_number in active_transcribers:
+                            transcriber = active_transcribers[caller_number].get("phone_transcriber")
+                            if transcriber and transcriber.rudra_agent:
+                                transcriber.rudra_agent.call_transferred = True
+                                transcriber.rudra_agent.is_active = False
+                                transcriber.rudra_agent.has_been_transferred = True
+                                logger.info(f"✅ AI agent stopped for {caller_number}")
+                                
+                                # Broadcast confirmation
+                                await websocket.send_json({
+                                    "type": "ai_stopped",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                except json.JSONDecodeError:
+                    pass
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}")
+
                 await websocket.send_json({
                     "type": "keepalive",
                     "timestamp": datetime.now().isoformat()
@@ -2034,8 +2082,9 @@ async def end_training_session(request: TrainingEndRequest):
         
         session = training_sessions[session_id]
         
-        if session["status"] != "active":
-            raise HTTPException(status_code=400, detail="Training session is not active")
+        # Allow ending even if status is not active (in case of reconnection issues)
+        if session["status"] not in ["active", "completed"]:
+            logger.warning(f"⚠️ Training session {session_id} has status: {session['status']}")
         
         chat = session["chat"]
         
@@ -2216,8 +2265,55 @@ async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends
     
     # Broadcast to all connected notification clients (dashboard)
     logger.info(f"📍 Broadcasting location to {len(notification_clients)} clients")
+    
+    # Calculate nearest stations and prepare dispatch proposal
+    dispatch_proposal = None
+    if call_sid:
+        try:
+            # Fetch insights to get emergency type
+            result = await db.execute(
+                select(CallInsight).where(CallInsight.call_sid == call_sid)
+            )
+            insight = result.scalar_one_or_none()
+            
+            emergency_type = "police" # Default
+            incident_summary = "Emergency reported"
+            
+            if insight and insight.incident:
+                # Map incident type to service
+                incident_type = insight.incident.get("type", "").lower()
+                if "fire" in incident_type:
+                    emergency_type = "fire"
+                elif "medical" in incident_type or "health" in incident_type or "ambulance" in incident_type:
+                    emergency_type = "hospital"
+                
+                incident_summary = insight.summary or incident_summary
+            
+            # Find nearest station
+            nearest = get_nearest_station(data.latitude, data.longitude, emergency_type)
+            
+            if nearest:
+                dispatch_proposal = {
+                    "type": "dispatch_proposal",
+                    "call_sid": call_sid,
+                    "caller_number": data.caller_number,
+                    "location": {
+                        "latitude": data.latitude,
+                        "longitude": data.longitude,
+                        "address": nearest.get("address", "Unknown location") # In real app, reverse geocode here
+                    },
+                    "emergency_type": emergency_type,
+                    "suggested_station": nearest,
+                    "incident_summary": incident_summary,
+                    "timestamp": datetime.now().isoformat()
+                }
+                logger.info(f"🚑 Generated dispatch proposal: {dispatch_proposal}")
+        except Exception as e:
+            logger.error(f"Error generating dispatch proposal: {e}")
+
     for client in notification_clients:
         try:
+            # Send location update
             await client.send_json({
                 "type": "location_update",
                 "location": {
@@ -2229,9 +2325,14 @@ async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends
                 },
                 "timestamp": datetime.now().isoformat()
             })
-            logger.info(f"📍 Location sent to client with call_sid: {call_sid}")
+            
+            # Send dispatch proposal if available
+            if dispatch_proposal:
+                await client.send_json(dispatch_proposal)
+                logger.info(f"📤 Sent dispatch proposal to client")
+                
         except Exception as e:
-            logger.error(f"Failed to send location to client: {e}")
+            logger.error(f"Failed to send location/dispatch to client: {e}")
             
     return {"status": "success", "message": "Location received", "call_sid": call_sid}
 
@@ -2245,6 +2346,7 @@ async def send_emergency_sms(request: EmergencySMSRequest):
     """
     try:
         logger.info(f"📱 Emergency SMS request: {request.emergency_type} to {request.to_number}")
+        logger.info(f"🔍 Raw SMS request payload: {request.dict()}")
         
         # Validate emergency type
         if request.emergency_type not in ['hospital', 'police', 'fire']:
@@ -2259,11 +2361,16 @@ async def send_emergency_sms(request: EmergencySMSRequest):
             insights_data=request.insights_data,
             location_address=request.location_address,
             emergency_type=request.emergency_type,
-            station_name=request.station_name
+            station_name=request.station_name,
+            maps_link=request.maps_link
         )
         
         if result['status'] == 'success':
-            logger.info(f"✅ Emergency SMS sent successfully: {result.get('message_sid')}")
+            body_preview = result.get('sms_body','')
+            logger.info(f"✅ Emergency SMS sent successfully: {result.get('message_sid')} | Length: {len(body_preview)} chars")
+            logger.info(f"📝 SMS Body Full:\n{body_preview}")
+            if len(body_preview) > 160:
+                logger.info("ℹ️ SMS exceeds 160 chars; Twilio will segment into multiple messages.")
             return EmergencySMSResponse(
                 status="success",
                 message="Emergency SMS sent successfully",
@@ -2317,6 +2424,8 @@ This will be spoken to emergency services when they answer the phone.
 
 Context: {context}
 
+IMPORTANT: The 'Emergency Type' provided in Context is the CONFIRMED classification. If other details conflict, prioritize 'Emergency Type'.
+
 Format requirements:
 - Start with "This is emergency dispatch"
 - State the emergency type and location clearly
@@ -2325,7 +2434,7 @@ Format requirements:
 - Keep it concise and urgent"""
             
             response = client.models.generate_content(
-                model='gemini-2.0-flash-exp',
+                model='gemini-2.5-flash',
                 contents=prompt
             )
             
@@ -2768,87 +2877,102 @@ async def websocket_endpoint(websocket: WebSocket):
 # Settings storage
 SETTINGS_FILE = "agency_settings.json"
 
-def load_settings() -> dict:
-    """Load agency settings from file"""
+def load_settings_file_fallback() -> dict:
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, 'r') as f:
                 return json.load(f)
     except Exception as e:
-        logger.error(f"Error loading settings: {e}")
-    
-    # Return default settings
-    return {
-        "call_forward_number": None,
-        "default_translation_language": "en"
-    }
+        logger.error(f"Error loading settings file fallback: {e}")
+    return {}
 
+async def load_settings_db() -> dict:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(AgencySetting).limit(1))
+        row = result.scalar_one_or_none()
+        if not row:
+            row = AgencySetting()
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            logger.info("🆕 Created default AgencySetting row")
+        return {
+            "call_forward_number": row.call_forward_number,
+            "default_translation_language": row.default_translation_language or "en",
+            "emergency_hospital": row.emergency_hospital,
+            "emergency_police": row.emergency_police,
+            "emergency_fire": row.emergency_fire
+        }
 
-def save_settings(settings: dict) -> bool:
-    """Save agency settings to file"""
-    try:
-        with open(SETTINGS_FILE, 'w') as f:
-            json.dump(settings, f, indent=2)
-        logger.info(f"✅ Settings saved to {SETTINGS_FILE}")
-        return True
-    except Exception as e:
-        logger.error(f"Error saving settings: {e}")
-        return False
+async def save_settings_db(new_values: dict) -> dict:
+    logger.info(f"💾 Saving settings to database: {new_values}")
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(AgencySetting).limit(1))
+        row = result.scalar_one_or_none()
+        if not row:
+            logger.info("🆕 Creating new AgencySetting row")
+            row = AgencySetting()
+            session.add(row)
+        else:
+            logger.info(f"📝 Updating existing AgencySetting row (id={row.id})")
+        
+        if 'call_forward_number' in new_values:
+            row.call_forward_number = new_values['call_forward_number']
+            logger.info(f"  ➡️ call_forward_number: {new_values['call_forward_number']}")
+        if 'default_translation_language' in new_values and new_values['default_translation_language']:
+            row.default_translation_language = new_values['default_translation_language']
+            logger.info(f"  ➡️ default_translation_language: {new_values['default_translation_language']}")
+        if 'emergency_hospital' in new_values:
+            row.emergency_hospital = new_values['emergency_hospital']
+            logger.info(f"  ➡️ emergency_hospital: {new_values['emergency_hospital']}")
+        if 'emergency_police' in new_values:
+            row.emergency_police = new_values['emergency_police']
+            logger.info(f"  ➡️ emergency_police: {new_values['emergency_police']}")
+        if 'emergency_fire' in new_values:
+            row.emergency_fire = new_values['emergency_fire']
+            logger.info(f"  ➡️ emergency_fire: {new_values['emergency_fire']}")
+        
+        await session.commit()
+        await session.refresh(row)
+        logger.info("✅ Agency settings committed to database")
+        
+        saved_data = {
+            "call_forward_number": row.call_forward_number,
+            "default_translation_language": row.default_translation_language or "en",
+            "emergency_hospital": row.emergency_hospital,
+            "emergency_police": row.emergency_police,
+            "emergency_fire": row.emergency_fire
+        }
+        logger.info(f"📤 Returning saved settings: {saved_data}")
+        return saved_data
 
 
 @app.get("/api/settings", response_model=SettingsResponse)
 async def get_settings():
-    """Get agency settings"""
     try:
-        settings = load_settings()
-        return SettingsResponse(
-            status="success",
-            message="Settings retrieved successfully",
-            settings=settings
-        )
+        db_settings = await load_settings_db()
+        file_settings = load_settings_file_fallback()
+        merged = {**file_settings, **db_settings}
+        return SettingsResponse(status="success", message="Settings retrieved successfully", settings=merged)
     except Exception as e:
         logger.error(f"Error getting settings: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve settings: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve settings: {str(e)}")
 
 
 @app.post("/api/settings", response_model=SettingsResponse)
 async def update_settings(settings: AgencySettings):
-    """Update agency settings"""
     try:
-        # Load current settings to ensure we don't overwrite with defaults if fields are missing
-        current_settings = load_settings()
-        
-        # Get new settings, excluding unset fields to allow partial updates
-        new_settings = settings.dict(exclude_unset=True)
-        
-        # Merge settings
-        updated_settings = {**current_settings, **new_settings}
-        
-        if save_settings(updated_settings):
-            return SettingsResponse(
-                status="success",
-                message="Settings updated successfully",
-                settings=updated_settings
-            )
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to save settings"
-            )
+        logger.info(f"📝 Received settings update request: {settings.dict()}")
+        updated = await save_settings_db(settings.dict(exclude_unset=True))
+        logger.info(f"✅ Settings saved successfully: {updated}")
+        return SettingsResponse(status="success", message="Settings updated successfully", settings=updated)
     except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
+        logger.error(f"❌ Validation error updating settings: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Error updating settings: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to update settings: {str(e)}"
-        )
+        logger.error(f"❌ Error updating settings: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to update settings: {str(e)}")
 
 
 @app.post("/api/send-sms")

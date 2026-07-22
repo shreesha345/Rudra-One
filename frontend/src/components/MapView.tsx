@@ -132,7 +132,7 @@ export const MapView = ({
    
  map.current = new mapboxgl.Map({
   container: mapContainer.current,
-  style: 'mapbox://styles/mapbox/navigation-night-v1', // Dark navigation style
+  style: 'mapbox://styles/mapbox/outdoors-v12', // Dark navigation style
   center: [longitude, latitude],
   zoom: zoom,
   attributionControl: false
@@ -300,7 +300,7 @@ export const MapView = ({
   useEffect(() => {
     if (map.current) {
       const styleUrl = mapStyle === 'streets' 
-        ? 'mapbox://styles/mapbox/navigation-night-v1' // Dark navigation style
+        ? 'mapbox://styles/mapbox/outdoors-v12' // Dark navigation style
         : 'mapbox://styles/mapbox/satellite-streets-v12'; // Satellite imagery
       
       map.current.setStyle(styleUrl);

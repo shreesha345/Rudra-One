@@ -98,7 +98,7 @@ export class ProtocolManager {
 
   constructor(apiKey: string) {
     this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({ model: "gemini-flash-latest" });
+    this.model = this.genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     this.sessions = new Map();
   }
 

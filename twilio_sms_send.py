@@ -100,8 +100,10 @@ Additional Information: {', '.join(additional_info) if additional_info else 'Non
             # Use Gemini to format and summarize if available
             if self.gemini_client:
                 try:
-                    prompt = f"""Format this 911 emergency information into a clear, concise SMS message (max 160 characters) for emergency services.
+                    prompt = f"""Format this 112 emergency information into a clear, concise SMS message (max 160 characters) for emergency services.
 Focus on: location, incident type, severity, and immediate action needed.
+
+IMPORTANT: The 'Emergency Type' provided below is the CONFIRMED classification. If 'Incident Details' or 'Summary' conflicts with 'Emergency Type', YOU MUST prioritize 'Emergency Type' and frame the message accordingly.
 
 Raw Information:
 {raw_text}
@@ -144,7 +146,8 @@ Time: {time_info.get('occurred_at', 'Now')}"""
         insights_data: Dict,
         location_address: str,
         emergency_type: str,
-        station_name: Optional[str] = None
+        station_name: Optional[str] = None,
+        maps_link: Optional[str] = None
     ) -> Dict:
         """
         Send formatted emergency SMS to emergency service
@@ -174,6 +177,9 @@ Time: {time_info.get('occurred_at', 'Now')}"""
         try:
             # Format the SMS message
             sms_body = self.format_sms_message(insights_data, location_address, emergency_type)
+            # Append Google Maps link if provided
+            if maps_link:
+                sms_body = f"{sms_body}\nMap: {maps_link}"[:500]  # safeguard max length
             
             # Add station name if provided
             if station_name:
@@ -258,7 +264,8 @@ def send_emergency_alert(
     insights_data: Dict,
     location_address: str,
     emergency_type: str,
-    station_name: Optional[str] = None
+    station_name: Optional[str] = None,
+    maps_link: Optional[str] = None
 ) -> Dict:
     """
     Convenience function to send emergency SMS
@@ -278,7 +285,8 @@ def send_emergency_alert(
         insights_data=insights_data,
         location_address=location_address,
         emergency_type=emergency_type,
-        station_name=station_name
+        station_name=station_name,
+        maps_link=maps_link
     )
 
 

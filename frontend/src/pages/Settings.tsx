@@ -82,15 +82,27 @@ export default function Settings() {
   const saveSettings = async () => {
     setSaving(true);
     try {
+      // Prepare the payload in the exact format required
+      const payload = {
+        call_forward_number: settings.call_forward_number || null,
+        default_translation_language: settings.default_translation_language || "en",
+        emergency_hospital: settings.emergency_hospital || null,
+        emergency_police: settings.emergency_police || null,
+        emergency_fire: settings.emergency_fire || null
+      };
+      
+      console.log('💾 Saving settings with payload:', payload);
+      
       const response = await fetch(`${API_BASE_URL}/api/settings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(settings),
+        body: JSON.stringify(payload),
       });
 
       const data = await response.json();
+      console.log('📥 Save response:', data);
 
       if (data.status === 'success') {
         toast({

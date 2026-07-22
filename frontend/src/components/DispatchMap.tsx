@@ -87,7 +87,7 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/navigation-night-v1',
+      style: 'mapbox://styles/mapbox/navigation-v1',
       center: [callerLongitude, callerLatitude],
       zoom: 12,
       attributionControl: false,
@@ -126,6 +126,11 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
   const fetchNearestStations = async (type: 'hospital' | 'police' | 'fire') => {
     if (!map.current) return;
 
+    console.log('🚁 DISPATCH MAP DEBUG:');
+    console.log('📍 Searching for:', type);
+    console.log('📍 Caller coordinates:', callerLatitude, callerLongitude);
+    console.log('🗺️ Mapbox token available:', !!mapboxgl.accessToken);
+
     setIsLoading(true);
     setHasSearched(true);
 
@@ -134,8 +139,17 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
       const overpassQuery = getOverpassQuery(type, callerLatitude, callerLongitude);
       const overpassUrl = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`;
 
+      console.log('🔍 Overpass API URL:', overpassUrl);
+
       const response = await fetch(overpassUrl);
+      
+      if (!response.ok) {
+        console.error('❌ Overpass API error:', response.status, response.statusText);
+        throw new Error(`Overpass API error: ${response.status}`);
+      }
+      
       const data = await response.json();
+      console.log('📊 Overpass API response:', data);
 
       if (data.elements && data.elements.length > 0) {
         // Calculate distances and sort
@@ -150,15 +164,22 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
           // Get REAL address using reverse geocoding
           let address = 'Address not available';
           try {
-            const geocodeResponse = await fetch(
-              `https://api.mapbox.com/geocoding/v5/mapbox.places/${lon},${lat}.json?access_token=${mapboxgl.accessToken}&limit=1`
-            );
-            const geocodeData = await geocodeResponse.json();
-            if (geocodeData.features && geocodeData.features.length > 0) {
-              address = geocodeData.features[0].place_name;
+            if (mapboxgl.accessToken && mapboxgl.accessToken !== 'your_mapbox_token_here') {
+              const geocodeResponse = await fetch(
+                `https://api.mapbox.com/geocoding/v5/mapbox.places/${lon},${lat}.json?access_token=${mapboxgl.accessToken}&limit=1`
+              );
+              
+              if (geocodeResponse.ok) {
+                const geocodeData = await geocodeResponse.json();
+                if (geocodeData.features && geocodeData.features.length > 0) {
+                  address = geocodeData.features[0].place_name;
+                }
+              } else {
+                console.warn('⚠️ Geocoding API error:', geocodeResponse.status);
+              }
             }
           } catch (error) {
-            console.error('Geocoding error:', error);
+            console.error('❌ Geocoding error:', error);
           }
 
           // Get route duration
@@ -194,19 +215,23 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
         onStationsFound?.(topStations);
       } else {
         // Fallback to demo data if Overpass API fails
-        console.log('No results from Overpass, using demo data');
+        console.log('⚠️ No results from Overpass API, using demo data');
         const demoStations = getDemoStations(type);
+        console.log('🏥 Generated demo stations:', demoStations);
         setNearestStations(demoStations);
         onStationsFound?.(demoStations);
       }
     } catch (error) {
-      console.error('Error fetching stations:', error);
+      console.error('❌ Error fetching stations from Overpass API:', error);
       // Use demo data as fallback
+      console.log('🔄 Falling back to demo data');
       const demoStations = getDemoStations(type);
+      console.log('🏥 Demo stations fallback:', demoStations);
       setNearestStations(demoStations);
       onStationsFound?.(demoStations);
     } finally {
       setIsLoading(false);
+      console.log('✅ Station search completed');
     }
   };
 
@@ -291,12 +316,28 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
   // Fetch routing directions from Mapbox
   const fetchRoute = async (stationLat: number, stationLon: number): Promise<any> => {
     try {
+      // Check if we have a valid access token
+      if (!mapboxgl.accessToken || mapboxgl.accessToken === 'your_mapbox_token_here') {
+        console.warn('⚠️ Invalid Mapbox token, skipping route fetch');
+        return null;
+      }
+
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${callerLongitude},${callerLatitude};${stationLon},${stationLat}?geometries=geojson&access_token=${mapboxgl.accessToken}`;
+      console.log('🗺️ Fetching route from:', url);
+      
       const response = await fetch(url);
+      
+      if (!response.ok) {
+        console.error('❌ Route API error:', response.status, response.statusText);
+        return null;
+      }
+      
       const data = await response.json();
+      console.log('✅ Route data received:', data);
+      
       return data.routes && data.routes.length > 0 ? data.routes[0] : null;
     } catch (error) {
-      console.error('Error fetching route:', error);
+      console.error('❌ Error fetching route:', error);
       return null;
     }
   };
@@ -392,7 +433,7 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
   useEffect(() => {
     if (map.current) {
       const styleUrl = mapStyle === 'streets' 
-        ? 'mapbox://styles/mapbox/navigation-night-v1'
+        ? 'mapbox://styles/mapbox/outdoors-v12'
         : 'mapbox://styles/mapbox/satellite-streets-v12';
       
       // Store current routes data before style change

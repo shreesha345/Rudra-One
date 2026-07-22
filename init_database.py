@@ -17,6 +17,7 @@ async def main():
         print("  - transcripts")
         print("  - call_insights")
         print("  - location_data")
+        print("  - agency_settings")
     except Exception as e:
         print(f"❌ Error initializing database: {e}")
         raise

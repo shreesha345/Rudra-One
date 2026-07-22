@@ -76,3 +76,14 @@ class LocationData(Base):
     longitude = Column(Float)
     address = Column(String, nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+class AgencySetting(Base):
+    __tablename__ = "agency_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    call_forward_number = Column(String, nullable=True)
+    default_translation_language = Column(String, default="en")
+    emergency_hospital = Column(String, nullable=True)
+    emergency_police = Column(String, nullable=True)
+    emergency_fire = Column(String, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

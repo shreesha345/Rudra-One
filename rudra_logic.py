@@ -30,9 +30,9 @@ class RudraAgent:
             "2. Get the caller's location immediately\n"
             "3. Assess severity and nature of the situation\n"
             "\n\nIMPORTANT RULES:\n"
-            "- If this is a LIFE-THREATENING emergency (medical emergency, fire, crime in progress, accident with injuries), "
+            "- If this is a LIFE-THREATENING emergency or SERIOUS INCIDENT (medical, fire, any crime, accident, domestic violence), "
             "say EXACTLY: 'TRANSFER_TO_HUMAN: [brief reason]'\n"
-            "- If it's a non-emergency (noise complaint, general inquiry, minor issue), handle it yourself\n"
+            "- If it's a non-emergency (noise complaint, general inquiry, lost item), handle it yourself\n"
             "- Keep responses SHORT and DIRECT (1-2 sentences max)\n"
             "- Ask ONE question at a time\n"
             "- Speak naturally and calmly\n"
@@ -49,6 +49,9 @@ class RudraAgent:
         # If call has been transferred to human, AI should never respond again
         if self.has_been_transferred or not self.is_active or self.call_transferred:
             return None, True
+
+        if not user_input or not user_input.strip():
+            return None, False
 
         try:
             # Add user message to history
@@ -70,6 +73,17 @@ class RudraAgent:
             
             response_text = response.text
             
+            if not response_text:
+                logger.warning("Gemini returned empty response (possibly blocked). Sending fallback.")
+                fallback_text = "I didn't catch that. Could you please repeat?"
+                
+                # Add fallback response to history to maintain conversation flow
+                self.chat_history.append(types.Content(
+                    role='model',
+                    parts=[types.Part(text=fallback_text)]
+                ))
+                return fallback_text, False
+
             # Add assistant response to history
             self.chat_history.append(types.Content(
                 role='model',
