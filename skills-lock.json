@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "skills": {
+    "signoz-creating-alerts": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-creating-alerts/SKILL.md",
+      "computedHash": "e25cd89661b1ebee63b32b840dccb461d32a21ffed99412a19e79b82bbe905d4"
+    },
+    "signoz-creating-dashboards": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-creating-dashboards/SKILL.md",
+      "computedHash": "643f2b55e701de3038e58fe460d21993ff73fc9a22cc7e027904500dfa647a17"
+    },
+    "signoz-explaining-alerts": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-explaining-alerts/SKILL.md",
+      "computedHash": "7df6bcc7b774e4d37a0562c3b8ef19ca81f24d25d65f304d7fa1d79f3710f3c8"
+    },
+    "signoz-explaining-dashboards": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-explaining-dashboards/SKILL.md",
+      "computedHash": "4072783eae8754180badced2784901e1564bab41f1ad5309b4968544b00dafd7"
+    },
+    "signoz-generating-queries": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-generating-queries/SKILL.md",
+      "computedHash": "ed5cc2ba259b5f6ae1b1531c69cac0417c6a6fe6c60badda89e74febe43bd778"
+    },
+    "signoz-investigating-alerts": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-investigating-alerts/SKILL.md",
+      "computedHash": "b8d24db8db539de075b94604c2720e9ebf8b1bf79214fbb4fa4a57a17349aff1"
+    },
+    "signoz-managing-views": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-managing-views/SKILL.md",
+      "computedHash": "7135fa2bc83b81d9f988d9975aef91348e9cc9f17196f18b74e45dc77775a4e2"
+    },
+    "signoz-mcp-setup": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-mcp-setup/SKILL.md",
+      "computedHash": "ade384840e7e3c5dd36c2a84291f284ae06e62120db5034b37b2d5acf1836b2c"
+    },
+    "signoz-modifying-dashboards": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-modifying-dashboards/SKILL.md",
+      "computedHash": "3153ef4d39d83f3bfaff42f413b874c6e647014bdf5fd26517c3b854728262d7"
+    },
+    "signoz-searching-docs": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-searching-docs/SKILL.md",
+      "computedHash": "c71331d07bd090ab8f5a6a79090342d5ecf6ec602c4cfcc4b363286ee9f153d5"
+    },
+    "signoz-setting-up-observability": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-setting-up-observability/SKILL.md",
+      "computedHash": "64edafb44a48f4181584da8ed3b1352900af8dafb6d1aeee6a2b1bbdba14cca3"
+    },
+    "signoz-writing-clickhouse-queries": {
+      "source": "SigNoz/agent-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/signoz/skills/signoz-writing-clickhouse-queries/SKILL.md",
+      "computedHash": "52623f5bb3fbae652ec2061976cdc81d39fe2a28cbd409f87015a07df8bd5102"
+    }
+  }
+}

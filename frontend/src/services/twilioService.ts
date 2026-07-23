@@ -48,12 +48,13 @@ async function sendRawSMS(to: string, body: string): Promise<SMSResponse> {
   }
 }
 
-async function sendTrackingLink(to: string): Promise<SMSResponse> {
+async function sendTrackingLink(to: string): Promise<SMSResponse & { trackingUrl?: string }> {
   const publicUrl = await getPublicUrl();
   const trackingUrl = `${publicUrl}/location-request?caller=${encodeURIComponent(to)}`;
   console.log('🔗 Constructed tracking URL:', trackingUrl);
   const body = `📍 Location Tracking\n${trackingUrl}`;
-  return sendRawSMS(to, body);
+  const result = await sendRawSMS(to, body);
+  return { ...result, trackingUrl };
 }
 
 export const twilioService = {

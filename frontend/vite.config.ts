@@ -4,10 +4,11 @@ import path from "path";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  // Read the single root .env file (shared with backend)
+  envDir: "../",
   server: {
     host: "::",
-    port: 8080,
-    allowedHosts: ["9d3916ec1939.ngrok-free.app", "5e3dece9ed5b.ngrok-free.app", "loaction-finder.vercel.app"],
+    port: 8082,
   },
   plugins: [react()],
   resolve: {

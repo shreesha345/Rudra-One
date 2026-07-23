@@ -615,6 +615,7 @@ export const Dashboard = () => {
   ]);
   const [selectedMessage, setSelectedMessage] = useState<string | null>(null);
   const [linkSent, setLinkSent] = useState<{ [key: string]: number }>({}); // Store timestamp of when link was sent
+  const [locationLinks, setLocationLinks] = useState<{ [key: string]: string }>({}); // Store location link for caller
   
   // Cleanup old linkSent states (timeout after 60 seconds)
   useEffect(() => {
@@ -1610,12 +1611,36 @@ export const Dashboard = () => {
         return;
       }
 
+      // Handle SMS status callbacks
+      if ((message as any).type === 'sms_status') {
+        const payload = message as any;
+        console.log('📱 SMS status update received:', payload);
+        if (payload.status === 'failed' || payload.status === 'undelivered') {
+          toast({
+            title: `❌ SMS Delivery Failed (${payload.to_number})`,
+            description: payload.explanation || `Twilio error: ${payload.error_message || 'Unknown error'}`,
+            variant: "destructive",
+            duration: 8000,
+          });
+        } else if (payload.status === 'delivered') {
+          toast({
+            title: `✅ SMS Delivered`,
+            description: `SMS successfully delivered to ${payload.to_number}.`,
+            duration: 4000,
+          });
+        }
+        return;
+      }
+
       // Handle system events (like location link sent)
       if ((message as any).type === 'system_event') {
         if ((message as any).event === 'location_link_sent') {
           console.log('🔗 Location link sent event received for:', (message as any).caller_number);
           if ((message as any).caller_number) {
             setLinkSent(prev => ({ ...prev, [(message as any).caller_number]: Date.now() }));
+            if ((message as any).location_link) {
+              setLocationLinks(prev => ({ ...prev, [(message as any).caller_number]: (message as any).location_link }));
+            }
             toast({
               title: "✅ Tracking Link Sent (AI)",
               description: `AI Agent sent location link to ${(message as any).caller_number}`,
@@ -1903,7 +1928,7 @@ export const Dashboard = () => {
   const loadSettings = async () => {
     setLoadingSettings(true);
     try {
-      const response = await fetch('http://localhost:8000/api/settings');
+      const response = await fetch(`${API_BASE_URL}/api/settings`);
       const data = await response.json();
 
       if (data.status === 'success' && data.settings) {
@@ -1921,7 +1946,7 @@ export const Dashboard = () => {
   const saveCallForwarding = async () => {
     setSavingSettings(true);
     try {
-      const response = await fetch('http://localhost:8000/api/settings', {
+      const response = await fetch(`${API_BASE_URL}/api/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2016,7 +2041,7 @@ export const Dashboard = () => {
   const saveLanguagePreference = async () => {
     setSavingSettings(true);
     try {
-      const response = await fetch('http://localhost:8000/api/settings', {
+      const response = await fetch(`${API_BASE_URL}/api/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3323,6 +3348,9 @@ export const Dashboard = () => {
       if (result.success) {
         // Mark as sent
         setLinkSent(prev => ({ ...prev, [phoneNumber]: Date.now() }));
+        if (result.trackingUrl) {
+          setLocationLinks(prev => ({ ...prev, [phoneNumber]: result.trackingUrl }));
+        }
 
         toast({
           title: "✅ Tracking Link Sent",
@@ -4096,18 +4124,6 @@ export const Dashboard = () => {
                   }
                   
                   const hasLocation = !!locationForCall;
-                  
-                  // Debug logging
-                  console.log('🗺️ Map Section Debug:', {
-                    selectedIncident,
-                    currentCallSid: currentCall?.call_sid,
-                    selectedCallSid,
-                    currentCallPhone: currentCall?.phone,
-                    hasLocation,
-                    matchedCallSid,
-                    locationDataKeys: Object.keys(locationData),
-                    locationForCall
-                  });
 
                   return hasLocation && locationForCall ? (
                     // Show map when location data is available
@@ -4131,6 +4147,16 @@ export const Dashboard = () => {
                             Link Sent
                           </div>
                           <div className="text-xs text-gray-500">Waiting for location data...</div>
+                          {locationLinks[currentCall.phone] && (
+                            <a
+                              href={locationLinks[currentCall.phone]}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-[#5B5FED] underline hover:text-[#4a4ec0] mt-2 block"
+                            >
+                              Open Tracking Link (Simulate Caller Click)
+                            </a>
+                          )}
                         </div>
                       ) : (
                         <Button

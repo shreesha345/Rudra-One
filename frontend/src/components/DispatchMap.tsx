@@ -85,13 +85,24 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
 
-    map.current = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/navigation-v1',
-      center: [callerLongitude, callerLatitude],
-      zoom: 12,
-      attributionControl: false,
-    });
+    // Guard: if no Mapbox token, show fallback instead of crashing
+    if (!mapboxgl.accessToken) {
+      console.warn('VITE_MAPBOX_TOKEN not set — DispatchMap will show a placeholder.');
+      return;
+    }
+
+    try {
+      map.current = new mapboxgl.Map({
+        container: mapContainer.current,
+        style: 'mapbox://styles/mapbox/outdoors-v12',
+        center: [callerLongitude, callerLatitude],
+        zoom: 12,
+        attributionControl: false,
+      });
+    } catch (err) {
+      console.error('Failed to init Mapbox:', err);
+      return;
+    }
 
     // Add caller marker (orange)
     callerMarker.current = new mapboxgl.Marker({
@@ -589,6 +600,31 @@ export const DispatchMap = forwardRef<DispatchMapRef, DispatchMapProps>(({
       map.current.fitBounds(bounds, { padding: 100, duration: 1500 });
     }
   }, [nearestStations]);
+
+  // Fallback UI when no Mapbox token
+  if (!mapboxgl.accessToken) {
+    return (
+      <div className="relative w-full h-full flex items-center justify-center bg-[#1a1a1a]">
+        <div className="text-center max-w-md p-8">
+          <MapIcon className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+          <h3 className="text-white font-semibold mb-2">Map unavailable</h3>
+          <p className="text-sm text-gray-400 mb-4">
+            Set <code className="text-[#5B5FED]">VITE_MAPBOX_TOKEN</code> in your <code className="text-[#5B5FED]">.env</code> file to enable the dispatch map.
+          </p>
+          <div className="mt-6 p-4 bg-[#0a0a0a] rounded-lg text-left">
+            <p className="text-xs text-gray-500 mb-1">Caller coordinates:</p>
+            <p className="text-xs text-gray-300 font-mono">{callerLatitude.toFixed(4)}, {callerLongitude.toFixed(4)}</p>
+            {callerAddress && (
+              <>
+                <p className="text-xs text-gray-500 mt-2 mb-1">Address:</p>
+                <p className="text-xs text-gray-300">{callerAddress}</p>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative w-full h-full flex bg-[#1a1a1a]">

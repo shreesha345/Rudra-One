@@ -6,18 +6,27 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // Simple OpenAI client implementation to avoid adding heavy dependencies
-class OpenAIClient {
+export class OpenAIClient {
   private apiKey: string;
   private model: string;
+  private baseUrl: string;
 
-  constructor(apiKey: string, model: string) {
+  constructor(apiKey: string, model: string, baseUrl?: string) {
     this.apiKey = apiKey;
     this.model = model;
+    
+    let cleanBaseUrl = (baseUrl || import.meta.env.VITE_OPENAI_BASE_URL || "https://api.openai.com/v1").trim().replace(/\/$/, "");
+    if (cleanBaseUrl.endsWith("/chat/completions")) {
+      cleanBaseUrl = cleanBaseUrl.replace(/\/chat\/completions$/, "");
+    }
+    this.baseUrl = cleanBaseUrl;
   }
 
   async generateContent(prompt: string): Promise<{ response: { text: () => string } }> {
     try {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      const url = `${this.baseUrl}/chat/completions`;
+      console.log(`🌐 OpenAI-compatible request to: ${url} using model: ${this.model}`);
+      const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -163,7 +172,7 @@ export class InsightsExtractor {
   private provider: "google" | "openai";
   private conversationHistory: Map<string, InsightsData>;
 
-  constructor(apiKey: string, provider: "google" | "openai" = "google", modelName?: string) {
+  constructor(apiKey: string, provider: "google" | "openai" = "google", modelName?: string, baseUrl?: string) {
     this.provider = provider;
     this.conversationHistory = new Map();
 
@@ -171,7 +180,7 @@ export class InsightsExtractor {
       this.genAI = new GoogleGenerativeAI(apiKey);
       this.model = this.genAI.getGenerativeModel({ model: modelName || "gemini-2.5-flash" });
     } else {
-      this.openAI = new OpenAIClient(apiKey, modelName || "gpt-4o");
+      this.openAI = new OpenAIClient(apiKey, modelName || "gpt-4o", baseUrl);
       this.model = this.openAI; // Both have generateContent method with compatible signature
     }
   }
@@ -356,6 +365,7 @@ export function getInsightsExtractor(apiKey?: string): InsightsExtractor {
     
     let key = apiKey;
     let modelName = "";
+    const baseUrl = import.meta.env.VITE_OPENAI_BASE_URL;
 
     if (provider === "google") {
       key = key || import.meta.env.VITE_GOOGLE_API_KEY;
@@ -377,7 +387,7 @@ export function getInsightsExtractor(apiKey?: string): InsightsExtractor {
       }
     }
     
-    insightsExtractorInstance = new InsightsExtractor(key, provider, modelName);
+    insightsExtractorInstance = new InsightsExtractor(key, provider, modelName, baseUrl);
   }
   return insightsExtractorInstance;
 }

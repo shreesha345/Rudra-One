@@ -4,6 +4,7 @@
  */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { OpenAIClient } from "./insightsService";
 
 export interface ProtocolQuestion {
   id: string;
@@ -92,14 +93,23 @@ Return ONLY a valid JSON array with 5-8 questions:
 Return ONLY the JSON array, no other text.`;
 
 export class ProtocolManager {
-  private genAI: GoogleGenerativeAI;
+  private genAI: GoogleGenerativeAI | null = null;
+  private openAI: OpenAIClient | null = null;
   private model: any;
+  private provider: "google" | "openai";
   private sessions: Map<string, ProtocolState>;
 
-  constructor(apiKey: string) {
-    this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  constructor(apiKey: string, provider: "google" | "openai" = "google", modelName?: string, baseUrl?: string) {
+    this.provider = provider;
     this.sessions = new Map();
+
+    if (provider === "google") {
+      this.genAI = new GoogleGenerativeAI(apiKey);
+      this.model = this.genAI.getGenerativeModel({ model: modelName || "gemini-2.5-flash" });
+    } else {
+      this.openAI = new OpenAIClient(apiKey, modelName || "gpt-4o", baseUrl);
+      this.model = this.openAI;
+    }
   }
 
   /**
@@ -340,11 +350,33 @@ let protocolManagerInstance: ProtocolManager | null = null;
 
 export function getProtocolManager(apiKey?: string): ProtocolManager {
   if (!protocolManagerInstance) {
-    const key = apiKey || import.meta.env.VITE_GOOGLE_API_KEY;
-    if (!key) {
-      throw new Error("Google API Key is required. Set VITE_GOOGLE_API_KEY in .env");
+    const provider = (import.meta.env.VITE_TRAINING_AI_PROVIDER || "google").toLowerCase() as "google" | "openai";
+    
+    let key = apiKey;
+    let modelName = "";
+    const baseUrl = import.meta.env.VITE_OPENAI_BASE_URL;
+
+    if (provider === "google") {
+      key = key || import.meta.env.VITE_GOOGLE_API_KEY;
+      modelName = import.meta.env.VITE_TRAINING_GOOGLE_MODEL || "gemini-2.5-flash";
+      if (!key) {
+        throw new Error("Google API Key is required. Set VITE_GOOGLE_API_KEY in .env");
+      }
+    } else {
+      key = key || import.meta.env.VITE_OPENAI_API_KEY;
+      modelName = import.meta.env.VITE_TRAINING_OPENAI_MODEL || "gpt-4o";
+      if (!key) {
+        console.warn("OpenAI API Key is missing. Set VITE_OPENAI_API_KEY in .env");
+        // Fallback to Google if OpenAI key is missing but Google key exists
+        if (import.meta.env.VITE_GOOGLE_API_KEY) {
+          console.log("Falling back to Google Gemini for Protocol Manager");
+          return new ProtocolManager(import.meta.env.VITE_GOOGLE_API_KEY, "google", import.meta.env.VITE_TRAINING_GOOGLE_MODEL);
+        }
+        throw new Error("OpenAI API Key is required. Set VITE_OPENAI_API_KEY in .env");
+      }
     }
-    protocolManagerInstance = new ProtocolManager(key);
+    
+    protocolManagerInstance = new ProtocolManager(key, provider, modelName, baseUrl);
   }
   return protocolManagerInstance;
 }

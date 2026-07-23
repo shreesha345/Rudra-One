@@ -48,8 +48,8 @@ export class AudioService {
       this.audioContext = new AudioContext({ sampleRate: 16000 });
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
-      // Use 1024 buffer for lower latency (reduced from 2048)
-      this.processor = this.audioContext.createScriptProcessor(1024, 1, 1);
+      // Use 4096 buffer size to prevent high HTTP POST frequency while maintaining low latency
+      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
 
       this.processor.onaudioprocess = (event) => {
         if (this.isRecording) {

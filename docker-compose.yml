@@ -1,6 +1,7 @@
-version: '3.8'
-
 services:
+  # ────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL database
+  # ────────────────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: rudraone_postgres
@@ -13,6 +14,94 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # FastAPI backend (Python)
+  # ────────────────────────────────────────────────────────────────────────────
+  backend:
+    build: .
+    container_name: rudraone_backend
+    restart: always
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-rudraone}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-rudraone-backend}
+      # Use the SigNoz ingester's internal Docker DNS name (on signoz-network)
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-ingester:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
+      SIGNOZ_ACCESS_TOKEN: ${SIGNOZ_ACCESS_TOKEN:-}
+    ports:
+      - "8000:8000"
+    networks:
+      - default
+      - signoz-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./static:/app/static
+      - ./911_calls.json:/app/911_calls.json:ro
+      - ./agency_settings.json:/app/agency_settings.json:ro
+      - recordings:/app/recordings
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # React frontend (Vite build → nginx serve)
+  # ────────────────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL}
+        - VITE_MAPBOX_TOKEN=${VITE_MAPBOX_TOKEN}
+        - VITE_TRAINING_AI_PROVIDER=${VITE_TRAINING_AI_PROVIDER}
+        - VITE_GOOGLE_API_KEY=${VITE_GOOGLE_API_KEY}
+        - VITE_TRAINING_GOOGLE_MODEL=${VITE_TRAINING_GOOGLE_MODEL}
+        - VITE_OPENAI_API_KEY=${VITE_OPENAI_API_KEY}
+        - VITE_OPENAI_BASE_URL=${VITE_OPENAI_BASE_URL}
+        - VITE_TRAINING_OPENAI_MODEL=${VITE_TRAINING_OPENAI_MODEL}
+        - VITE_GOOGLE_TRANSLATE_API_KEY=${VITE_GOOGLE_TRANSLATE_API_KEY}
+        - VITE_ELEVENLABS_API_KEY=${VITE_ELEVENLABS_API_KEY}
+        - VITE_ELEVENLABS_API_URL=${VITE_ELEVENLABS_API_URL}
+        - VITE_TWILIO_ACCOUNT_SID=${VITE_TWILIO_ACCOUNT_SID}
+        - VITE_TWILIO_AUTH_TOKEN=${VITE_TWILIO_AUTH_TOKEN}
+        - VITE_TWILIO_PHONE_NUMBER=${VITE_TWILIO_PHONE_NUMBER}
+        - VITE_OTEL_ENABLED=${VITE_OTEL_ENABLED:-true}
+        - VITE_OTEL_SERVICE_NAME=${VITE_OTEL_SERVICE_NAME:-rudraone-frontend}
+        - VITE_OTEL_EXPORTER_OTLP_ENDPOINT=${VITE_OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318/v1/traces}
+    container_name: rudraone_frontend
+    restart: always
+    ports:
+      - "8082:80"
+    depends_on:
+      - backend
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Cloudflare Tunnel (replaces ngrok — exposes backend to the internet)
+  # ────────────────────────────────────────────────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: rudraone_tunnel
+    restart: always
+    command: tunnel --url http://backend:8000
+    depends_on:
+      - backend
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+
+networks:
+  signoz-network:
+    external: true
 
 volumes:
   postgres_data:
+  recordings:
+

@@ -29,9 +29,10 @@ You'll need to sign up for and obtain API keys from:
    - Sign up: https://www.twilio.com/
    - Get Account SID, Auth Token, and a Phone Number
 
-3. **Google Gemini** (AI Assistant)
-   - Sign up: https://ai.google.dev/
-   - Get API key
+3. **OpenAI-compatible LLM API key**
+   - Any provider that speaks the OpenAI Chat Completions API works:
+     OpenAI, Groq, Together, OpenRouter, DeepSeek, Ollama, LM Studio, vLLM, etc.
+   - Set `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` in `.env`
 
 4. **Sarvam AI** (Text-to-Speech for Indian Languages)
    - Sign up: https://www.sarvam.ai/
@@ -43,22 +44,17 @@ You'll need to sign up for and obtain API keys from:
 
 ## Quick Start
 
-### Option 1: Automated Setup (Recommended)
+### Option 1: Docker (Recommended)
 
-1. Open PowerShell in the RudraOne directory
-2. Run the startup script:
+1. Copy the environment file and fill in your API keys:
    ```powershell
-   .\start.ps1
+   Copy-Item .env.example .env
    ```
-
-The script will:
-- Check all prerequisites
-- Create `.env` file from template
-- Start PostgreSQL database
-- Install Python dependencies
-- Install Node dependencies
-- Initialize the database
-- Start backend and frontend servers
+2. Start all services:
+   ```powershell
+   docker compose up -d --build
+   ```
+   This starts PostgreSQL, the backend (FastAPI), and a Cloudflare tunnel.
 
 ### Option 2: Manual Setup
 
@@ -69,12 +65,12 @@ Copy the example environment file:
 Copy-Item .env.example .env
 ```
 
-Edit `.env` and add your API keys.
+The single root `.env` file is shared by both backend and frontend.
 
 #### 2. Start PostgreSQL
 
 ```powershell
-docker-compose up -d
+docker compose up -d postgres
 ```
 
 #### 3. Install Python Dependencies
@@ -94,7 +90,7 @@ cd ..
 #### 5. Start Backend
 
 ```powershell
-uv run python server.py
+uv run python -m backend.main
 ```
 
 #### 6. Start Frontend (in a new terminal)
@@ -162,6 +158,6 @@ Press `Ctrl+C` in the PowerShell window where the script is running.
 ## Need Help?
 
 Check the logs:
-- Backend: Look at the terminal where `server.py` is running
+- Backend: Look at the terminal where `backend.main` is running
 - Frontend: Look at browser console (F12) and terminal where `npm run dev` is running
 - Database: `docker-compose logs postgres`

@@ -131,14 +131,23 @@ export const MapView = ({
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
 
-   
- map.current = new mapboxgl.Map({
-  container: mapContainer.current,
-  style: 'mapbox://styles/mapbox/outdoors-v12', // Dark navigation style
-  center: [longitude, latitude],
-  zoom: zoom,
-  attributionControl: false
-});
+    if (!mapboxgl.accessToken) {
+      console.warn('VITE_MAPBOX_TOKEN not set — MapView will show a placeholder.');
+      return;
+    }
+
+    try {
+      map.current = new mapboxgl.Map({
+        container: mapContainer.current,
+        style: 'mapbox://styles/mapbox/outdoors-v12',
+        center: [longitude, latitude],
+        zoom: zoom,
+        attributionControl: false
+      });
+    } catch (err) {
+      console.error('Failed to init Mapbox:', err);
+      return;
+    }
     // Add navigation controls (but hide them since we have custom controls)
     const nav = new mapboxgl.NavigationControl({ showCompass: false });
     map.current.addControl(nav, 'top-right');
@@ -756,6 +765,19 @@ export const MapView = ({
     emergencyMarkers.current.forEach(m => m.remove());
     emergencyMarkers.current = [];
   };
+
+  if (!mapboxgl.accessToken) {
+    return (
+      <div className="relative w-full h-full flex items-center justify-center bg-[#1a1a1a]">
+        <div className="text-center p-8">
+          <MapPin className="w-10 h-10 text-gray-600 mx-auto mb-3" />
+          <p className="text-sm text-gray-400">
+            Set <code className="text-[#5B5FED]">VITE_MAPBOX_TOKEN</code> in <code className="text-[#5B5FED]">.env</code> to enable the map.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative w-full h-full">
