@@ -189,7 +189,7 @@ const validateLocationText = (text: string | undefined): boolean => {
 export const Dashboard = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState("insights");
+  const [activeTab, setActiveTab] = useState("overview");
   const [activeNavItem, setActiveNavItem] = useState("calls");
   const [leftWidth, setLeftWidth] = useState(280); // From design spec: 280px
   const [rightWidth, setRightWidth] = useState(376); // From design spec: 376px
@@ -1253,71 +1253,101 @@ export const Dashboard = () => {
               timestamp: new Date().toISOString()
             };
 
-            // Store location data using call_sid if available, otherwise find from calls list
-            setCalls(prevCalls => {
-              let targetCallSid = call_sid;
+            // Use the provided call_sid directly if available
+            if (call_sid) {
+              console.log('📍 Using provided call_sid:', call_sid);
+              
+              // Store location data
+              setLocationData(prev => {
+                const updated = {
+                  ...prev,
+                  [call_sid]: locationInfo
+                };
+                console.log('✅ Location data updated for call_sid:', call_sid);
+                console.log('📍 Updated locationData state:', updated);
+                console.log('📍 All stored call_sids:', Object.keys(updated));
+                return updated;
+              });
+              
+              // Clear the "Link Sent" state for this number
+              if (caller_number) {
+                 setLinkSent(prev => {
+                   const newState = { ...prev };
+                   delete newState[caller_number];
+                   return newState;
+                 });
+              }
 
-              // If call_sid not provided, find the most recent call from this caller
-              if (!targetCallSid && caller_number) {
-                // Normalize caller number (remove spaces, dashes, etc.)
-                const normalizedCaller = caller_number.replace(/\D/g, '');
-                
+              // Show toast notification
+              toast({
+                title: "📍 Location Received",
+                description: address,
+              });
+              
+              // Update map location
+              setMapLocation(prev => ({
+                ...prev,
+                latitude,
+                longitude,
+                address,
+                district: prev.district
+              }));
+
+              console.log('✅ Location stored for call_sid:', call_sid);
+            } else if (caller_number) {
+              // Fallback: find call_sid from calls list by phone number
+              const normalizedCaller = caller_number.replace(/\D/g, '');
+              
+              setCalls(prevCalls => {
                 const matchingCall = prevCalls.find(call => {
                   const normalizedCallPhone = call.phone.replace(/\D/g, '');
                   return normalizedCallPhone.includes(normalizedCaller) || normalizedCaller.includes(normalizedCallPhone);
                 });
                 
                 if (matchingCall && matchingCall.call_sid) {
-                  targetCallSid = matchingCall.call_sid;
-                  console.log('📍 Found call_sid from calls list (fuzzy match):', targetCallSid);
-                }
-              }
-
-              if (targetCallSid) {
-                setLocationData(prev => {
-                  const updated = {
-                    ...prev,
-                    [targetCallSid]: locationInfo
-                  };
-                  console.log('✅ Location data updated for call_sid:', targetCallSid);
-                  console.log('📍 Updated locationData state:', updated);
-                  return updated;
-                });
-                
-                // Also clear the "Link Sent" state for this number since we have the location now
-                if (caller_number) {
-                   setLinkSent(prev => {
-                     const newState = { ...prev };
-                     delete newState[caller_number];
-                     return newState;
-                   });
-                }
-
-                // Show toast notification only if call is live
-                const targetCall = prevCalls.find(c => c.call_sid === targetCallSid);
-                if (targetCall?.isLive) {
-                  toast({
-                    title: "📍 Location Received",
-                    description: address,
-                  });
+                  const foundCallSid = matchingCall.call_sid;
+                  console.log('📍 Found call_sid from calls list (fuzzy match):', foundCallSid);
                   
-                  // Update map location immediately
-                  setMapLocation(prev => ({
-                    ...prev,
-                    latitude,
-                    longitude,
-                    address,
-                    district: prev.district
-                  }));
+                  // Schedule location update after this state update
+                  setTimeout(() => {
+                    setLocationData(prev => {
+                      const updated = {
+                        ...prev,
+                        [foundCallSid]: locationInfo
+                      };
+                      console.log('✅ Location data updated for call_sid (fuzzy):', foundCallSid);
+                      console.log('📍 Updated locationData state:', updated);
+                      return updated;
+                    });
+                    
+                    setLinkSent(prev => {
+                      const newState = { ...prev };
+                      delete newState[caller_number];
+                      return newState;
+                    });
+
+                    toast({
+                      title: "📍 Location Received",
+                      description: address,
+                    });
+                    
+                    setMapLocation(prev => ({
+                      ...prev,
+                      latitude,
+                      longitude,
+                      address,
+                      district: prev.district
+                    }));
+                  }, 0);
+                } else {
+                  console.log('⚠️ Could not find call_sid for location update');
                 }
-
-                console.log('✅ Location stored for call_sid:', targetCallSid);
-              } else {
-                console.log('⚠️ Could not find call_sid for location update');
-              }
-
-              return prevCalls;
-            });
+                
+                return prevCalls; // Don't modify calls
+              });
+            } else {
+              console.log('⚠️ No call_sid or caller_number provided for location update');
+            }
           });
         }
       } else if (message.type === 'call_started') {
@@ -3137,9 +3167,8 @@ export const Dashboard = () => {
         const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
         try {
-          // Clear previous data first
+          // Clear previous data first (but keep location data for other calls)
           setConversation([]);
-          setLocationData({});
           setProtocolQuestions([]); // Clear protocol questions
           setInsights({
             summary: "",
@@ -3188,14 +3217,15 @@ export const Dashboard = () => {
           const locationData = await locationRes.json();
 
           if (locationData.status === 'success' && locationData.location) {
-            setLocationData({
+            setLocationData(prev => ({
+              ...prev,
               [call.call_sid]: {
                 latitude: locationData.location.latitude,
                 longitude: locationData.location.longitude,
                 address: locationData.location.address,
                 timestamp: locationData.location.timestamp
               }
-            });
+            }));
             console.log('📍 Loaded location for', call.phone, '(historical - no emergency services search)');
           } else {
             console.log('📍 No location data for this call');
@@ -3218,9 +3248,9 @@ export const Dashboard = () => {
         // If we are here, it means we clicked a live call.
         // If `selectedCallSid` was already this call, we shouldn't clear.
         if (selectedCallSid !== call.call_sid) {
-             console.log('🔄 Switching to new live call - clearing conversation');
+             console.log('🔄 Switching to new live call - clearing conversation (keeping location data)');
              setConversation([]);
-             setLocationData({});
+             // Don't clear location data - it's keyed by call_sid so won't interfere
         } else {
              console.log('🔄 Re-selected current live call - keeping conversation');
         }
@@ -4014,30 +4044,81 @@ export const Dashboard = () => {
               />
               <div
                 id="location-section"
-                className={`border-b border-[#2a2a2a] flex flex-col min-h-[300px] ${calls[selectedIncident]?.call_sid && locationData[calls[selectedIncident].call_sid]
+                key={`location-${calls[selectedIncident]?.call_sid}-${locationData[calls[selectedIncident]?.call_sid || '']?.timestamp || 'none'}`}
+                className={`border-b border-[#2a2a2a] flex flex-col flex-1 min-h-[300px] ${calls[selectedIncident]?.call_sid && locationData[calls[selectedIncident].call_sid]
                   ? 'p-0'
                   : 'p-6 items-center justify-center text-center'
                   }`}
               >
                 {(() => {
                   const currentCall = calls[selectedIncident];
-                  const hasLocation = currentCall?.call_sid && locationData[currentCall.call_sid];
+                  
+                  // Try to find location data in multiple ways:
+                  // 1. Exact match by current call's call_sid
+                  // 2. Match by selectedCallSid (which tracks the currently active call)
+                  // 3. Match by any call with the same phone number
+                  let locationForCall = currentCall?.call_sid ? locationData[currentCall.call_sid] : null;
+                  let matchedCallSid = currentCall?.call_sid;
+                  
+                  // Fallback 1: Check selectedCallSid
+                  if (!locationForCall && selectedCallSid && locationData[selectedCallSid]) {
+                    locationForCall = locationData[selectedCallSid];
+                    matchedCallSid = selectedCallSid;
+                    console.log('📍 Using location from selectedCallSid:', selectedCallSid);
+                  }
+                  
+                  // Fallback 2: Find any call with the same phone number that has location data
+                  if (!locationForCall && currentCall?.phone) {
+                    const normalizedCurrentPhone = currentCall.phone.replace(/\D/g, '');
+                    
+                    for (const callSid of Object.keys(locationData)) {
+                      const matchingCall = calls.find(c => c.call_sid === callSid);
+                      if (matchingCall) {
+                        const normalizedMatchPhone = matchingCall.phone.replace(/\D/g, '');
+                        if (normalizedCurrentPhone === normalizedMatchPhone ||
+                            normalizedCurrentPhone.endsWith(normalizedMatchPhone.slice(-10)) ||
+                            normalizedMatchPhone.endsWith(normalizedCurrentPhone.slice(-10))) {
+                          locationForCall = locationData[callSid];
+                          matchedCallSid = callSid;
+                          console.log('📍 Using location from matching phone:', matchingCall.phone, 'call_sid:', callSid);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Fallback 3: If there's only one location entry and one call, use it
+                  if (!locationForCall && Object.keys(locationData).length === 1 && calls.length <= 2) {
+                    const [onlyCallSid] = Object.keys(locationData);
+                    locationForCall = locationData[onlyCallSid];
+                    matchedCallSid = onlyCallSid;
+                    console.log('📍 Using only available location data:', onlyCallSid);
+                  }
+                  
+                  const hasLocation = !!locationForCall;
+                  
+                  // Debug logging
+                  console.log('🗺️ Map Section Debug:', {
+                    selectedIncident,
+                    currentCallSid: currentCall?.call_sid,
+                    selectedCallSid,
+                    currentCallPhone: currentCall?.phone,
+                    hasLocation,
+                    matchedCallSid,
+                    locationDataKeys: Object.keys(locationData),
+                    locationForCall
+                  });
 
-                  return hasLocation ? (
+                  return hasLocation && locationForCall ? (
                     // Show map when location data is available
-                    <div className="h-full w-full bg-[#1a1a1a] overflow-hidden relative flex-1">
-                      <div className="p-4 bg-[#0a0a0a] border-b border-[#2a2a2a]">
-                        <div className="text-sm text-gray-400">📍 Live Location</div>
-                        {locationData[currentCall.call_sid].address && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            {locationData[currentCall.call_sid].address}
-                          </div>
-                        )}
+                    <div className="h-full w-full bg-[#1a1a1a] overflow-hidden relative flex-1 flex flex-col">
+                      <div className="flex-1 relative min-h-0">
+                        <MapView
+                          latitude={locationForCall.latitude}
+                          longitude={locationForCall.longitude}
+                          address={locationForCall.address}
+                        />
                       </div>
-                      <MapView
-                        latitude={locationData[currentCall.call_sid].latitude}
-                        longitude={locationData[currentCall.call_sid].longitude}
-                      />
                     </div>
                   ) : (
                     // Show request button when no location data
@@ -4916,6 +4997,7 @@ export const Dashboard = () => {
                         <MapView
                           latitude={mapLocation.latitude}
                           longitude={mapLocation.longitude}
+                          address={mapLocation.address}
                         />
                       </div>
                     )}

@@ -253,7 +253,8 @@ class DeepgramTranscriber:
         try:
             url = (
                 f"wss://api.deepgram.com/v1/listen?"
-                f"model=nova-2"
+                f"model=nova-3-general"
+                f"&language=multi"
                 f"&encoding=linear16"
                 f"&sample_rate={WHISPER_RATE}"
                 f"&channels=1"

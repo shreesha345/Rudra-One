@@ -41,6 +41,7 @@ interface MapViewProps {
   latitude?: number;
   longitude?: number;
   zoom?: number;
+  address?: string; // Address to display on map
   onLocationUpdate?: (lat: number, lng: number) => void;
   onServicesUpdate?: (services: EmergencyService[]) => void;
   isFullScreen?: boolean; // Hide controls when in full screen mode
@@ -109,6 +110,7 @@ export const MapView = ({
   latitude = 40.7128, 
   longitude = -74.0060, 
   zoom = 12,
+  address,
   onLocationUpdate,
   onServicesUpdate,
   isFullScreen = false
@@ -813,7 +815,7 @@ export const MapView = ({
 
       {/* Map Controls Overlay - Always show */}
       {(
-        <div className="absolute top-3 right-3 flex flex-col gap-2">
+        <div className="absolute top-3 right-3 flex flex-col gap-2 items-end">
           {/* Style Toggle - Map/Satellite */}
           <div className="bg-[#1a1a1a]/95 backdrop-blur-md rounded-xl border border-[#333333] shadow-xl overflow-hidden min-w-[100px]">
             <button
@@ -841,35 +843,35 @@ export const MapView = ({
           </div>
 
           {/* Zoom Controls - Curved Square Box */}
-          <div className="bg-[#1a1a1a]/95 backdrop-blur-md rounded-xl border border-[#333333] shadow-xl overflow-hidden">
+          <div className="bg-[#1a1a1a]/95 backdrop-blur-md rounded-md border border-[#333333] shadow-xl overflow-hidden flex flex-col items-center w-10">
             <button
               onClick={handleZoomIn}
-              className="flex items-center justify-center w-11 h-11 text-gray-300 hover:text-white hover:bg-[#5B5FED] transition-all duration-200"
+              className="flex items-center justify-center w-10 h-10 text-gray-300 hover:text-white hover:bg-[#5B5FED] transition-all duration-200"
               title="Zoom in"
             >
-              <Plus className="w-5 h-5" />
+              <Plus className="w-4 h-4" />
             </button>
-            <div className="border-t border-[#333333] px-3 py-1.5 text-center bg-[#0a0a0a]/50">
-              <span className="text-sm font-semibold text-gray-300">{currentZoom}</span>
+            <div className="border-t border-[#333333] w-full py-0.5 text-center bg-[#0a0a0a]/50">
+              <span className="text-[10px] font-semibold text-gray-300 block leading-none">{currentZoom}</span>
             </div>
             <button
               onClick={handleZoomOut}
-              className="flex items-center justify-center w-11 h-11 text-gray-300 hover:text-white hover:bg-[#5B5FED] transition-all duration-200 border-t border-[#333333]"
+              className="flex items-center justify-center w-10 h-10 text-gray-300 hover:text-white hover:bg-[#5B5FED] transition-all duration-200 border-t border-[#333333]"
               title="Zoom out"
             >
-              <Minus className="w-5 h-5" />
+              <Minus className="w-4 h-4" />
             </button>
           </div>
         </div>
       )}
 
-      {/* Coordinates Indicator - Only show when marker is placed */}
+      {/* Address/Coordinates Indicator - Only show when marker is placed */}
       {hasMarker && marker.current && (
-        <div className="absolute bottom-4 left-4 bg-[#1a1a1a]/95 backdrop-blur-md rounded-xl border border-[#333333] shadow-xl px-3 py-2">
+        <div className="absolute bottom-4 left-4 bg-[#1a1a1a]/95 backdrop-blur-md rounded-xl border border-[#333333] shadow-xl px-3 py-2 max-w-[300px]">
           <div className="flex items-center gap-1.5">
-            <MapPin className="w-3 h-3 text-[#fb923c]" />
-            <span className="text-xs font-medium text-gray-300">
-              {latitude.toFixed(4)}°N, {Math.abs(longitude).toFixed(4)}°{longitude < 0 ? 'W' : 'E'}
+            <MapPin className="w-3 h-3 text-[#fb923c] shrink-0" />
+            <span className="text-xs font-medium text-gray-300 truncate">
+              {address || `${latitude.toFixed(4)}°N, ${Math.abs(longitude).toFixed(4)}°${longitude < 0 ? 'W' : 'E'}`}
             </span>
           </div>
         </div>

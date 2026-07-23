@@ -266,7 +266,8 @@ class DeepgramTranscriber:
             # Deepgram streaming endpoint with enhanced accuracy settings
             url = (
                 f"wss://api.deepgram.com/v1/listen?"
-                f"model=nova-2"  # Latest, most accurate model
+                f"model=nova-3-general"  # Latest, most accurate model
+                f"&language=multi"
                 f"&encoding=linear16"
                 f"&sample_rate={WHISPER_RATE}"
                 f"&channels=1"

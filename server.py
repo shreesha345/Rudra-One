@@ -7,7 +7,10 @@ import time
 import subprocess
 import pyaudio
 import base64
-import audio_ops as audioop
+try:
+    import audioop
+except ImportError:
+    import audio_ops as audioop
 import wave
 import logging
 from datetime import datetime
@@ -63,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 # Environment variables with validation
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+DEEPGRAM_MODEL = os.getenv("DEEPGRAM_MODEL", "nova-3-general")  # Configurable model (nova-2, nova-2-general, whisper, etc.)
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID") or os.getenv("VITE_TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN") or os.getenv("VITE_TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER") or os.getenv("VITE_TWILIO_PHONE_NUMBER")
@@ -88,6 +92,7 @@ transcription_clients: Dict[str, Set[WebSocket]] = {}
 notification_clients: Set[WebSocket] = set()
 active_transcribers: Dict[str, dict] = {}
 browser_transcribers: Dict[str, dict] = {}  # Separate transcribers for browser audio
+location_requests: Dict[str, dict] = {}  # Maps request_id -> {caller_number, call_sid, timestamp}
 ngrok_process = None
 WS_URL = None
 
@@ -409,6 +414,7 @@ class LocationDataRequest(BaseModel):
     longitude: float
     accuracy: float
     caller_number: Optional[str] = None
+    request_id: Optional[str] = None  # Unique ID to match request to caller
 
 
 class AgencySettings(BaseModel):
@@ -787,6 +793,7 @@ def process_audio_for_clients(audio_data: bytes) -> dict:
             audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_data))
             
         # 1. Process for Browser (16kHz PCM16)
+        # Use high quality resampling if possible (pydub uses ffmpeg if available)
         browser_segment = audio_segment.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         pcm_16khz = browser_segment.raw_data
         result["browser_audio"] = base64.b64encode(pcm_16khz).decode("utf-8")
@@ -796,7 +803,19 @@ def process_audio_for_clients(audio_data: bytes) -> dict:
         pcm_8khz = phone_segment.raw_data
         
         # Convert to uLaw
-        ulaw_data = audioop.lin2ulaw(pcm_8khz, 2)
+        # Ensure we have valid PCM data
+        if len(pcm_8khz) % 2 != 0:
+            # Pad with one byte if odd length (shouldn't happen with 16-bit)
+            pcm_8khz += b'\x00'
+            
+        try:
+            ulaw_data = audioop.lin2ulaw(pcm_8khz, 2)
+        except Exception as e:
+            logger.error(f"audioop conversion failed: {e}, trying fallback")
+            # Fallback if audioop fails (e.g. custom module issue)
+            # Simple truncation to 8-bit (very poor quality but works)
+            # But we should have the custom module if standard is missing
+            raise e
         
         # Chunking
         chunk_size = 160  # 20ms
@@ -807,6 +826,8 @@ def process_audio_for_clients(audio_data: bytes) -> dict:
                 
     except Exception as e:
         logger.error(f"Audio processing error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         
     return result
 
@@ -953,16 +974,18 @@ class DeepgramRealtimeTranscriber:
         # Optimized for low latency real-time transcription
         self.dg_url = (
             f"wss://api.deepgram.com/v1/listen"
-            f"?model=nova-3"
+            f"?model={DEEPGRAM_MODEL}"
             f"&language=multi"
             f"&encoding=linear16"
             f"&sample_rate={RATE}"
             f"&channels={CHANNELS}"
-            f"&interim_results=true"  # Get partial results for faster feedback
-            f"&endpointing=800"  # Wait 800ms of silence before finalizing (better for complete sentences)
-            f"&vad_events=true"  # Voice activity detection
+            f"&interim_results=true"
+            f"&endpointing=300"
+            f"&vad_events=true"
             f"&punctuate=true"
             f"&smart_format=true"
+            f"&filler_words=false"
+            f"&profanity_filter=false"
         )
 
     async def buffer_transcript(self, speaker: str, message: str, translated_message: str = None, language: str = None):
@@ -1551,29 +1574,18 @@ class DeepgramRealtimeTranscriber:
                     await asyncio.sleep(1)
                     
                 if location_received:
-                    follow_up_text = f"I have received your location: {self.rudra_agent.location_details}. Thank you."
+                    # Location received!
+                    # We do NOT need to say anything here because the receive_location endpoint
+                    # already handles the confirmation ("I have received your location")
+                    # AND triggers the AI to generate the next response (Summary/Transfer).
+                    
+                    # However, if we are in this loop, it means the receive_location endpoint
+                    # might have fired concurrently.
+                    # The receive_location endpoint updates rudra_agent.location_details.
+                    
                     logger.info(f"✅ Location received during wait: {self.rudra_agent.location_details}")
-                    
-                    # Broadcast follow-up response
-                    await self.broadcast_to_clients({
-                        "speaker": "AI Agent",
-                        "message": follow_up_text,
-                        "timestamp": datetime.now().isoformat(),
-                        "caller_number": self.caller_number,
-                        "is_final": True,
-                        "type": "transcription",
-                        "language": lang,
-                        "translation_needed": False
-                    })
-                    
-                    # Queue audio for follow-up
-                    await convert_and_queue_ai_audio(follow_up_text, lang, self.caller_number, self.call_sid)
-                    
-                    # Buffer transcript
-                    await self.buffer_transcript("AI Agent", follow_up_text, None, lang)
-                    
-                    # Update chat history so AI knows it said this
-                    self.rudra_agent.chat_history.append({"role": "assistant", "content": follow_up_text})
+                    # We just exit the loop and let the receive_location logic handle the speaking.
+                    pass
                 else:
                     logger.info("⏳ Location wait timed out - no follow up needed, user will respond")
 
@@ -2451,33 +2463,81 @@ async def get_training_session(session_id: str):
 
 
 @app.get("/location-request")
-async def get_location_page():
+async def get_location_page(request_id: str = None, caller: str = None):
     """Serve the location request HTML page"""
+    # Log the request for debugging
+    logger.info(f"📍 Location page requested: request_id={request_id}, caller={caller}")
     return FileResponse("frontend/public/location.html")
+
+
+@app.post("/api/location-request")
+async def create_location_request(caller_number: str, call_sid: str = None):
+    """Create a new location request and return a unique ID"""
+    import uuid
+    request_id = str(uuid.uuid4())[:8]  # Short unique ID
+    
+    location_requests[request_id] = {
+        "caller_number": caller_number,
+        "call_sid": call_sid,
+        "timestamp": datetime.now().isoformat(),
+        "status": "pending"
+    }
+    
+    logger.info(f"📍 Created location request: {request_id} for {caller_number}")
+    
+    # Get public URL
+    public_url = getattr(app.state, "public_url", "http://localhost:8000")
+    if public_url.endswith('/'):
+        public_url = public_url[:-1]
+    
+    link = f"{public_url}/location-request?id={request_id}"
+    
+    return {"request_id": request_id, "link": link}
 
 
 @app.post("/location")
 async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends(get_db)):
     """Receive location data from the client"""
-    logger.info(f"📍 Received location: Lat={data.latitude}, Lon={data.longitude}, Acc={data.accuracy}, Caller={data.caller_number}")
+    logger.info(f"📍 Received location: Lat={data.latitude}, Lon={data.longitude}, Acc={data.accuracy}, Caller={data.caller_number}, RequestID={data.request_id}")
+    
+    # If request_id is provided, look up the caller info from location_requests
+    caller_number = data.caller_number
+    if data.request_id and data.request_id in location_requests:
+        req_data = location_requests[data.request_id]
+        caller_number = req_data.get("caller_number") or caller_number
+        logger.info(f"📍 Found location request: {data.request_id} -> {caller_number}")
+        # Mark as completed
+        location_requests[data.request_id]["status"] = "completed"
     
     # Find the call_sid for this caller - first check active sessions
     call_sid = None
     # Normalize input number (remove non-digits)
-    input_number_clean = ''.join(filter(str.isdigit, data.caller_number))
+    input_number_clean = ''.join(filter(str.isdigit, caller_number)) if caller_number else ""
     
+    # 1. Check active sessions (Memory)
     for sid, session in sessions.items():
         session_number = session.get("caller_number", "")
         session_number_clean = ''.join(filter(str.isdigit, session_number))
         
         # Check for exact match or suffix match (last 10 digits)
         if session_number == data.caller_number or \
-           (len(input_number_clean) >= 10 and len(session_number_clean) >= 10 and input_number_clean[-10:] == session_number_clean[-10:]):
+           (input_number_clean and session_number_clean and len(input_number_clean) >= 10 and len(session_number_clean) >= 10 and input_number_clean[-10:] == session_number_clean[-10:]):
             call_sid = sid
             logger.info(f"📍 Found call_sid in active sessions (match): {call_sid}")
             break
+            
+    # 2. Check active transcribers (Memory) - sometimes sessions might be stale
+    if not call_sid:
+        for sid, transcriber_data in active_transcribers.items():
+            phone_transcriber = transcriber_data.get("phone_transcriber")
+            if phone_transcriber and phone_transcriber.caller_number:
+                t_number_clean = ''.join(filter(str.isdigit, phone_transcriber.caller_number))
+                if t_number_clean and input_number_clean and len(t_number_clean) >= 10 and len(input_number_clean) >= 10 and t_number_clean[-10:] == input_number_clean[-10:]:
+                    call_sid = sid
+                    logger.info(f"📍 Found call_sid in active transcribers: {call_sid}")
+                    break
     
-    # If not found in sessions, check database for most recent call from this number
+    # 3. Check database for most recent call from this number
     if not call_sid:
         try:
             # Try exact match first
@@ -2493,11 +2553,9 @@ async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends
                 logger.info(f"📍 Found call_sid in database (exact match): {call_sid}")
             else:
                 # Try fuzzy match (last 10 digits)
-                clean_number = ''.join(filter(str.isdigit, data.caller_number))[-10:]
+                clean_number = input_number_clean[-10:] if len(input_number_clean) >= 10 else input_number_clean
                 if clean_number:
                     logger.info(f"📍 Trying fuzzy match for number ending in: {clean_number}")
-                    # This is a bit complex in SQL, so we might need to fetch recent calls and filter in python if volume is low
-                    # Or just rely on the frontend to handle the mapping if backend fails
                     pass
         except Exception as e:
             logger.error(f"Error finding call in database: {e}")
@@ -2519,6 +2577,7 @@ async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends
             if phone_transcriber and hasattr(phone_transcriber, "rudra_agent") and phone_transcriber.rudra_agent:
                 # Try to get address from nearest station logic or just send coordinates
                 # We can use OpenStreetMap Nominatim for server-side reverse geocoding
+                address = f"Latitude: {data.latitude}, Longitude: {data.longitude}"
                 try:
                     # Simple reverse geocoding using OSM (no API key required, but rate limited)
                     # Use a proper User-Agent as required by OSM policy
@@ -2529,20 +2588,77 @@ async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends
                         async with session.get(url, headers=headers) as resp:
                             if resp.status == 200:
                                 geo_data = await resp.json()
-                                address = geo_data.get('display_name')
-                                if address:
-                                    logger.info(f"📍 Server-side reverse geocoding success: {address}")
-                                    phone_transcriber.rudra_agent.receive_location_update(address)
-                                else:
-                                    # Fallback to coordinates
-                                    phone_transcriber.rudra_agent.receive_location_update(f"Latitude: {data.latitude}, Longitude: {data.longitude}")
-                            else:
-                                # Fallback to coordinates
-                                phone_transcriber.rudra_agent.receive_location_update(f"Latitude: {data.latitude}, Longitude: {data.longitude}")
+                                display_name = geo_data.get('display_name')
+                                if display_name:
+                                    logger.info(f"📍 Server-side reverse geocoding success: {display_name}")
+                                    address = display_name
                 except Exception as e:
                     logger.error(f"Server-side geocoding failed: {e}")
-                    # Fallback to coordinates
-                    phone_transcriber.rudra_agent.receive_location_update(f"Latitude: {data.latitude}, Longitude: {data.longitude}")
+                
+                # Send confirmation to caller (Voice + Text)
+                # Short confirmation first
+                confirmation_text = "I have received your location."
+                lang = caller_languages.get(data.caller_number, "en")
+                
+                # Update RudraAgent with language context
+                phone_transcriber.rudra_agent.receive_location_update(address, lang)
+                
+                # 1. Speak confirmation
+                await convert_and_queue_ai_audio(confirmation_text, lang, data.caller_number, call_sid)
+                
+                # 2. Trigger AI to generate next response (Summary or Question)
+                # Run in thread to avoid blocking
+                try:
+                    ai_response_text, transferred, _ = await asyncio.to_thread(phone_transcriber.rudra_agent.process_system_event)
+                    
+                    if ai_response_text:
+                        logger.info(f"🤖 AI generated post-location response: {ai_response_text}")
+                        
+                        # Speak AI response
+                        await convert_and_queue_ai_audio(ai_response_text, lang, data.caller_number, call_sid)
+                        
+                        # Broadcast to frontend
+                        await phone_transcriber.broadcast_to_clients({
+                            "speaker": "AI Agent",
+                            "message": ai_response_text,
+                            "timestamp": datetime.now().isoformat(),
+                            "caller_number": data.caller_number,
+                            "is_final": True,
+                            "type": "transcription",
+                            "language": lang,
+                            "translation_needed": False
+                        })
+                        
+                        # Buffer transcript
+                        await phone_transcriber.buffer_transcript("AI Agent", ai_response_text, None, lang)
+                        
+                        if transferred:
+                            logger.info("🚨 Call transferred to human dispatcher after location update")
+                            await phone_transcriber.broadcast_to_clients({
+                                "type": "ai_transfer",
+                                "reason": "Location received and emergency confirmed",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                except Exception as e:
+                    logger.error(f"Error generating AI response after location: {e}")
+
+                # 3. Broadcast confirmation to frontend (so it shows up before the AI response)
+                await phone_transcriber.broadcast_to_clients({
+                    "speaker": "AI Agent",
+                    "message": confirmation_text,
+                    "timestamp": datetime.now().isoformat(),
+                    "caller_number": data.caller_number,
+                    "is_final": True,
+                    "type": "transcription",
+                    "language": lang,
+                    "translation_needed": False
+                })
+                
+                # 4. Buffer confirmation transcript
+                await phone_transcriber.buffer_transcript("AI Agent", confirmation_text, None, lang)
+                
+                # 5. Update agent history for confirmation
+                phone_transcriber.rudra_agent.chat_history.append({"role": "assistant", "content": confirmation_text})
             else:
                 logger.warning(f"⚠️ RudraAgent not found for call_sid {call_sid}")
         else:
@@ -3035,52 +3151,14 @@ async def websocket_endpoint(websocket: WebSocket):
                             ulaw_data = base64.b64decode(payload)
                             pcm_data_8khz = audioop.ulaw2lin(ulaw_data, 2)
                             
-                            # Better upsampling from 8kHz to 16kHz
+                            # Fast upsampling using audioop (much faster than pydub for small chunks)
                             try:
-                                # Try numpy for best quality
-                                import numpy as np
-                                
-                                # Convert bytes to int16 array
-                                audio_array = np.frombuffer(pcm_data_8khz, dtype=np.int16)
-                                
-                                # High-quality upsampling: duplicate + filter
-                                upsampled = np.repeat(audio_array, 2)
-                                
-                                # Apply low-pass filter to smooth
-                                kernel = np.array([0.25, 0.5, 0.25])
-                                filtered = np.convolve(upsampled, kernel, mode='same')
-                                
-                                pcm_data_16khz = filtered.astype(np.int16).tobytes()
-                                
-                            except ImportError:
-                                # Fallback: Manual upsampling with linear interpolation
-                                try:
-                                    import struct
-                                    
-                                    # Unpack 8kHz samples
-                                    samples_8k = struct.unpack(f'<{len(pcm_data_8khz)//2}h', pcm_data_8khz)
-                                    
-                                    # Upsample 8kHz to 16kHz (2x interpolation - simple and efficient)
-                                    samples_16k = []
-                                    for i in range(len(samples_8k) - 1):
-                                        samples_16k.append(samples_8k[i])
-                                        # Linear interpolation between samples
-                                        interpolated = (samples_8k[i] + samples_8k[i + 1]) // 2
-                                        samples_16k.append(interpolated)
-                                    samples_16k.append(samples_8k[-1]);  # Last sample
-                                    
-                                    # Pack back to bytes
-                                    pcm_data_16khz = struct.pack(f'<{len(samples_16k)}h', *samples_16k)
-                                    
-                                except Exception:
-                                    # Last resort: audioop - upsample to 16kHz
-                                    pcm_data_16khz = audioop.ratecv(pcm_data_8khz, 2, 1, 8000, RATE, None)[0]
-                                    
+                                pcm_data_16khz, _ = audioop.ratecv(pcm_data_8khz, 2, 1, 8000, 16000, None)
                             except Exception as e:
                                 logger.error(f"Failed to upsample audio: {e}")
-                                # Fallback to audioop - upsample to 16kHz
-                                pcm_data_16khz = audioop.ratecv(pcm_data_8khz, 2, 1, 8000, RATE, None)[0]
-                            
+                                # Simple fallback: duplicate samples
+                                pcm_data_16khz = b''.join(bytes([b, b]) for b in pcm_data_8khz)
+
                             # Save for recording (16kHz)
                             try:
                                 with recording_lock:

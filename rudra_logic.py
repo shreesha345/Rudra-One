@@ -102,18 +102,21 @@ class RudraAgent:
                         
                         # Execute the tool (send SMS)
                         if self.caller_number and self.caller_number != "unknown":
-                            # Generate link using the public URL (ngrok or production)
+                            # Generate unique link using the public URL (ngrok or production)
                             base_url = self.public_url if self.public_url else "http://localhost:8000"
                             # Ensure no trailing slash
                             if base_url.endswith('/'):
                                 base_url = base_url[:-1]
-                                
-                            link = f"{base_url}/location-request?caller={self.caller_number}"
+                            
+                            # Generate unique request ID to avoid browser caching issues
+                            import uuid
+                            request_id = str(uuid.uuid4())[:8]
+                            link = f"{base_url}/location-request?id={request_id}&caller={self.caller_number}"
                             sms_body = f"RudraOne Emergency: Please click here to share your live location: {link}"
                             
                             try:
                                 send_sms(self.caller_number, sms_body)
-                                logger.info("✅ Location link SMS sent successfully")
+                                logger.info(f"✅ Location link SMS sent successfully (request_id: {request_id})")
                             except Exception as e:
                                 logger.error(f"❌ Failed to send location SMS: {e}")
                         else:
@@ -133,7 +136,8 @@ class RudraAgent:
                         logger.info(f"🛠️ AI triggered tool: check_location_status for {self.caller_number}")
                         
                         if self.location_details:
-                            tool_response_text = f"I have received your location: {self.location_details}. Thank you."
+                            # Short confirmation, let the system event handle the rest
+                            tool_response_text = "I have received your location."
                         else:
                             tool_response_text = "I haven't received your location yet. Please click the link I sent to your mobile number."
                         
@@ -170,15 +174,84 @@ class RudraAgent:
             logger.error(f"Error in RudraAgent (OpenAI): {e}")
             return "I'm sorry, I'm having trouble processing that. Let me transfer you to a human dispatcher.", True, None
 
-    def receive_location_update(self, address: str):
+    def process_system_event(self):
+        """
+        Trigger a response from the agent based on the current history (e.g. after a system update).
+        Does NOT add a user message, but generates an assistant response based on the latest state.
+        Returns: (response_text, call_transferred, tool_used)
+        """
+        # If call has been transferred to human, AI should never respond again
+        if self.has_been_transferred or not self.is_active or self.call_transferred:
+            return None, True, None
+
+        try:
+            # Generate response with OpenAI based on current history (which includes system update)
+            response = self.client.chat.completions.create(
+                model=self.model_id,
+                messages=self.chat_history,
+                temperature=0.7,
+                max_tokens=150,
+                tools=self.tools,
+                tool_choice="auto"
+            )
+            
+            message = response.choices[0].message
+            
+            # Handle tool calls (unlikely here but possible)
+            if message.tool_calls:
+                # ... (Simplified tool handling for system events if needed, mostly just return text)
+                pass
+
+            response_text = message.content
+            
+            if not response_text:
+                return None, False, None
+
+            # Add assistant response to history
+            self.chat_history.append({"role": "assistant", "content": response_text})
+            
+            # Check if AI wants to transfer the call
+            if "TRANSFER_TO_HUMAN:" in response_text:
+                self.call_transferred = True
+                self.is_active = False
+                self.has_been_transferred = True
+                parts = response_text.split("TRANSFER_TO_HUMAN:")
+                reason = parts[1].strip() if len(parts) > 1 else "emergency situation"
+                # Return the full text so the user hears the summary first
+                return response_text.replace(f"TRANSFER_TO_HUMAN: {reason}", f"I'm transferring you to a human dispatcher now. {reason}"), True, None
+            
+            return response_text, self.call_transferred, None
+            
+        except Exception as e:
+            logger.error(f"Error in RudraAgent (System Event): {e}")
+            return None, False, None
+
+    def receive_location_update(self, address: str, language_code: str = "en"):
         """
         Receive location update from the system and inject it into the chat history.
         """
-        logger.info(f"📍 RudraAgent received location update: {address}")
+        logger.info(f"📍 RudraAgent received location update: {address} (Language: {language_code})")
         self.location_details = address
+        
+        lang_map = {
+            "en": "English",
+            "hi": "Hindi",
+            "es": "Spanish",
+            "fr": "French",
+            "de": "German",
+            "bn": "Bengali",
+            "ta": "Tamil",
+            "te": "Telugu",
+            "mr": "Marathi",
+            "gu": "Gujarati",
+            "kn": "Kannada",
+            "ml": "Malayalam"
+        }
+        language_name = lang_map.get(language_code, "the same language as the caller")
+        
         self.chat_history.append({
             "role": "system", 
-            "content": f"SYSTEM UPDATE: The caller's live location has been received via the link. Address: {address}. You should acknowledge this to the caller."
+            "content": f"SYSTEM UPDATE: The caller's live location has been received via the link. Address: {address}. You should acknowledge this to the caller. IMPORTANT: Respond in {language_name} ONLY."
         })
 
 

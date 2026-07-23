@@ -1,58 +1,196 @@
 <!DOCTYPE html>
 <html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RudraOne - Share Location</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(255,255,255,0.05);
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .logo { font-size: 48px; margin-bottom: 20px; }
+        h1 { font-size: 24px; margin-bottom: 10px; color: #5B5FED; }
+        p { color: #aaa; margin-bottom: 30px; font-size: 14px; line-height: 1.6; }
+        .status { padding: 20px; border-radius: 12px; margin-top: 20px; }
+        .status.loading { background: rgba(91, 95, 237, 0.2); }
+        .status.success { background: rgba(34, 197, 94, 0.2); }
+        .status.error { background: rgba(239, 68, 68, 0.2); }
+        .spinner {
+            width: 40px; height: 40px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: #5B5FED;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .icon { font-size: 48px; margin-bottom: 15px; }
+        .retry-btn {
+            background: #5B5FED;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 15px;
+        }
+        .retry-btn:hover { background: #4a4ed0; }
+    </style>
+</head>
 <body>
-<h2>Emergency Location Request</h2>
-<p>Click "Allow" when asked for location.</p>
+    <div class="container">
+        <div class="logo">🚨</div>
+        <h1>Emergency Location Request</h1>
+        <p>RudraOne Emergency Services needs your location to dispatch help quickly.</p>
+        <div id="status" class="status loading">
+            <div class="spinner"></div>
+            <p>Requesting your location...</p>
+            <p style="font-size: 12px; margin-top: 10px;">Please tap "Allow" when prompted</p>
+        </div>
+    </div>
 
 <script>
-function getQueryParam(param) {
-    const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get(param);
-}
-
-function sendLocation(lat, lon, acc) {
+(function() {
+    const statusDiv = document.getElementById('status');
+    
+    function getQueryParam(param) {
+        const urlParams = new URLSearchParams(window.location.search);
+        return urlParams.get(param);
+    }
+    
+    // Get request_id or caller from URL
+    const requestId = getQueryParam('id');
     const callerNumber = getQueryParam('caller');
     
-    fetch("/location", {
-        method: "POST",
-        headers: { 
-            "Content-Type": "application/json",
-            "ngrok-skip-browser-warning": "true"
-        },
-        body: JSON.stringify({
-            latitude: lat,
-            longitude: lon,
-            accuracy: acc,
-            caller_number: callerNumber
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        console.log('Location sent successfully:', data);
-        document.body.innerHTML = "<h2>Location Sent</h2><p>Thank you. Help is on the way.</p>";
-    })
-    .catch(error => {
-        console.error('Error sending location:', error);
-        document.body.innerHTML = "<h2>Error</h2><p>Failed to send location. Please try again.</p>";
-    });
-}
+    console.log('Request ID:', requestId, 'Caller:', callerNumber);
+    
+    function showSuccess() {
+        statusDiv.className = 'status success';
+        statusDiv.innerHTML = `
+            <div class="icon">✅</div>
+            <p style="font-size: 18px; font-weight: bold; color: #22c55e;">Location Sent Successfully</p>
+            <p style="margin-top: 10px;">Help is on the way. Stay calm and stay on the line.</p>
+        `;
+    }
+    
+    function showError(message) {
+        statusDiv.className = 'status error';
+        statusDiv.innerHTML = `
+            <div class="icon">❌</div>
+            <p style="font-size: 18px; font-weight: bold; color: #ef4444;">Failed to Send Location</p>
+            <p style="margin-top: 10px;">${message}</p>
+            <button class="retry-btn" onclick="location.reload()">Try Again</button>
+        `;
+    }
 
-if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-        (pos) => {
-            sendLocation(
-                pos.coords.latitude,
-                pos.coords.longitude,
-                pos.coords.accuracy
-            );
-        },
-        (err) => {
-            alert("Unable to get location: " + err.message);
+    function sendLocation(lat, lon, acc) {
+        // Get the base URL from the current page's origin
+        const baseUrl = window.location.origin;
+        const locationUrl = baseUrl + '/location';
+        
+        console.log('Sending location to:', locationUrl);
+        console.log('Request ID:', requestId, 'Caller:', callerNumber);
+        console.log('Coordinates:', lat, lon, 'Accuracy:', acc);
+        
+        statusDiv.innerHTML = `
+            <div class="spinner"></div>
+            <p>Sending your location...</p>
+        `;
+        
+        fetch(locationUrl, {
+            method: "POST",
+            headers: { 
+                "Content-Type": "application/json",
+                "ngrok-skip-browser-warning": "true"
+            },
+            body: JSON.stringify({
+                latitude: lat,
+                longitude: lon,
+                accuracy: acc,
+                caller_number: callerNumber,
+                request_id: requestId
+            })
+        })
+        .then(response => {
+            console.log('Response status:', response.status);
+            if (!response.ok) {
+                throw new Error('Server returned ' + response.status);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Location sent successfully:', data);
+            showSuccess();
+        })
+        .catch(error => {
+            console.error('Error sending location:', error);
+            showError('Network error. Please check your connection and try again.');
+        });
+    }
+
+    function requestLocation() {
+        if (!navigator.geolocation) {
+            showError('Geolocation is not supported by your browser.');
+            return;
         }
-    );
-} else {
-    alert("Geolocation not supported on this device.");
-}
+        
+        const options = {
+            enableHighAccuracy: true,
+            timeout: 30000,
+            maximumAge: 0
+        };
+        
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                console.log('Got position:', pos.coords);
+                sendLocation(
+                    pos.coords.latitude,
+                    pos.coords.longitude,
+                    pos.coords.accuracy
+                );
+            },
+            (err) => {
+                console.error('Geolocation error:', err);
+                let message = 'Unable to get your location.';
+                switch(err.code) {
+                    case err.PERMISSION_DENIED:
+                        message = 'Location permission denied. Please enable location access and reload.';
+                        break;
+                    case err.POSITION_UNAVAILABLE:
+                        message = 'Location unavailable. Please try again.';
+                        break;
+                    case err.TIMEOUT:
+                        message = 'Location request timed out. Please try again.';
+                        break;
+                }
+                showError(message);
+            },
+            options
+        );
+    }
+    
+    // Start location request immediately
+    requestLocation();
+})();
 </script>
 
 </body>
