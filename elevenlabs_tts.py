@@ -2,6 +2,7 @@ import os
 import logging
 import subprocess
 import shutil
+import asyncio
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -135,52 +136,56 @@ async def text_to_speech_elevenlabs(text: str, language_code: str = 'en') -> Opt
         logger.warning("⚠️ Empty text provided to TTS")
         return None
     
-    try:
-        from elevenlabs import VoiceSettings
-        
-        client = get_elevenlabs_client()
-        if not client:
-            return None
-        
-        voice_id = get_voice_id(language_code)
-        
-        logger.info(f"🎤 Generating speech for: '{text[:50]}...' | Language: {language_code} | Voice: {voice_id}")
-        
-        # Generate audio
-        audio_generator = client.text_to_speech.convert(
-            voice_id=voice_id,
-            text=text,
-            model_id="eleven_multilingual_v2",  # Multilingual model
-            voice_settings=VoiceSettings(
-                stability=0.5,
-                similarity_boost=0.75,
-                style=0.0,
-                use_speaker_boost=True
+    def _generate_audio_blocking():
+        try:
+            from elevenlabs import VoiceSettings
+            
+            client = get_elevenlabs_client()
+            if not client:
+                return None
+            
+            voice_id = get_voice_id(language_code)
+            
+            logger.info(f"🎤 Generating speech for: '{text[:50]}...' | Language: {language_code} | Voice: {voice_id}")
+            
+            # Generate audio
+            audio_generator = client.text_to_speech.convert(
+                voice_id=voice_id,
+                text=text,
+                model_id="eleven_multilingual_v2",  # Multilingual model
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    use_speaker_boost=True
+                )
             )
-        )
-        
-        # Collect audio chunks
-        audio_chunks = []
-        chunk_count = 0
-        for chunk in audio_generator:
-            if chunk:
-                audio_chunks.append(chunk)
-                chunk_count += 1
-        
-        if not audio_chunks:
-            logger.error("❌ No audio generated from ElevenLabs")
+            
+            # Collect audio chunks
+            audio_chunks = []
+            chunk_count = 0
+            for chunk in audio_generator:
+                if chunk:
+                    audio_chunks.append(chunk)
+                    chunk_count += 1
+            
+            if not audio_chunks:
+                logger.error("❌ No audio generated from ElevenLabs")
+                return None
+            
+            audio_data = b"".join(audio_chunks)
+            logger.info(f"✅ Generated {len(audio_data)} bytes of audio from {chunk_count} chunks")
+            
+            return audio_data
+            
+        except ImportError:
+            logger.error("❌ ElevenLabs library not installed. Install with: pip install elevenlabs")
             return None
-        
-        audio_data = b"".join(audio_chunks)
-        logger.info(f"✅ Generated {len(audio_data)} bytes of audio from {chunk_count} chunks")
-        
-        return audio_data
-        
-    except ImportError:
-        logger.error("❌ ElevenLabs library not installed. Install with: pip install elevenlabs")
-        return None
-    except Exception as e:
-        logger.error(f"❌ ElevenLabs TTS error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+        except Exception as e:
+            logger.error(f"❌ ElevenLabs TTS error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    # Run the blocking generation in a thread
+    return await asyncio.to_thread(_generate_audio_blocking)

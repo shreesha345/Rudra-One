@@ -7,7 +7,7 @@ import time
 import subprocess
 import pyaudio
 import base64
-import audioop
+import audio_ops as audioop
 import wave
 import logging
 from datetime import datetime
@@ -22,21 +22,24 @@ import asyncio
 import threading
 from queue import Queue
 from typing import Dict, Set, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import websockets
 import traceback
+import aiohttp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
 # Import training functions
-from training import load_scenarios, select_random_scenario
+from training import load_scenarios, select_random_scenario, UnifiedTrainingClient
 from google import genai
+from openai import OpenAI
 # Import SMS service
 from twilio_sms_send import send_emergency_alert, send_sms
 from database import init_db, get_db, AsyncSessionLocal
 from models import User, LoginLog, Call, Transcript, CallInsight, LocationData, AgencySetting
 from rudra_logic import RudraAgent
 from elevenlabs_tts import text_to_speech_elevenlabs
+from RudraOne_Analytics import RudraAnalyst
 
 # Import Twilio MediaStream routes for Gemini Live Voice integration
 # Import Twilio MediaStream routes for Gemini Live Voice integration
@@ -64,6 +67,7 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID") or os.getenv("VITE_TWILIO_A
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN") or os.getenv("VITE_TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER") or os.getenv("VITE_TWILIO_PHONE_NUMBER")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", "8000"))
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS")
@@ -161,11 +165,20 @@ async def lifespan(app: FastAPI):
     global training_scenarios, training_client
     try:
         training_scenarios = load_scenarios("911_calls.json")
-        if GOOGLE_API_KEY:
-            training_client = genai.Client(api_key=GOOGLE_API_KEY)
-            logger.info(f"✅ Training system initialized with {len(training_scenarios)} scenarios")
+        
+        provider = os.getenv("TRAINING_AI_PROVIDER", "google").lower()
+        api_key = None
+        
+        if provider == "google":
+            api_key = GOOGLE_API_KEY
+        elif provider == "openai":
+            api_key = OPENAI_API_KEY
+            
+        if api_key:
+            training_client = UnifiedTrainingClient(provider, api_key)
+            logger.info(f"✅ Training system initialized with {len(training_scenarios)} scenarios using {provider}")
         else:
-            logger.warning("⚠️ GOOGLE_API_KEY not set, training system disabled")
+            logger.warning(f"⚠️ {provider.upper()}_API_KEY not set, training system disabled")
             training_scenarios = []
     except Exception as e:
         logger.error(f"⚠️ Failed to initialize training system: {e}")
@@ -257,6 +270,27 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
+# Initialize Rudra Analyst
+rudra_analyst = RudraAnalyst()
+
+class AnalyticsRequest(BaseModel):
+    message: str
+
+@app.post("/api/analytics/chat")
+async def analytics_chat(request: AnalyticsRequest):
+    """
+    Chat with the RudraOne Analytics agent.
+    Returns either a text response or an HTML artifact for visualization.
+    """
+    try:
+        # Run the synchronous chat method in a thread pool to avoid blocking the event loop
+        response = await asyncio.to_thread(rudra_analyst.chat, request.message)
+        return response
+    except Exception as e:
+        logger.error(f"Analytics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 if ENVIRONMENT == "production":
@@ -271,7 +305,7 @@ class AudioStreamRequest(BaseModel):
     audio: str = Field(..., description="Base64 encoded audio data")
     caller_number: str = Field(..., description="Caller phone number")
     
-    @validator('audio')
+    @field_validator('audio')
     def validate_audio(cls, v):
         try:
             base64.b64decode(v)
@@ -384,7 +418,7 @@ class AgencySettings(BaseModel):
     emergency_police: Optional[str] = Field(None, description="Emergency contact for Police")
     emergency_fire: Optional[str] = Field(None, description="Emergency contact for Fire")
     
-    @validator('default_translation_language')
+    @field_validator('default_translation_language')
     def validate_language_code(cls, v):
         # List of supported Indian languages + English
         valid_codes = ['en', 'hi', 'bn', 'te', 'mr', 'ta', 'gu', 'kn', 'ml', 'pa', 'or']
@@ -665,72 +699,119 @@ async def text_to_speech_elevenlabs(text: str, language_code: str = 'en') -> Opt
         logger.warning("⚠️ Empty text provided to TTS")
         return None
     
-    try:
-        from elevenlabs import VoiceSettings
-        from elevenlabs.client import ElevenLabs
-        
-        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-        
-        # Language-specific voice mapping (ElevenLabs supports multilingual voices)
-        # Using multilingual voices that work well with different languages
-        voice_map = {
-            'hi': 'pNInz6obpgDQGcFmaJgB',  # Adam - works well with Hindi
-            'bn': 'pNInz6obpgDQGcFmaJgB',  # Bengali
-            'ta': 'pNInz6obpgDQGcFmaJgB',  # Tamil
-            'te': 'pNInz6obpgDQGcFmaJgB',  # Telugu
-            'es': 'EXAVITQu4vr4xnSDxMaL',  # Bella - Spanish
-            'fr': 'EXAVITQu4vr4xnSDxMaL',  # French
-            'de': 'pNInz6obpgDQGcFmaJgB',  # German
-            'zh': 'pNInz6obpgDQGcFmaJgB',  # Chinese
-            'ja': 'pNInz6obpgDQGcFmaJgB',  # Japanese
-            'ar': 'pNInz6obpgDQGcFmaJgB',  # Arabic
-        }
-        
-        voice_id = voice_map.get(language_code, ELEVENLABS_VOICE)
-        
-        logger.info(f"🎤 Generating speech for: '{text[:50]}...' | Language: {language_code} | Voice: {voice_id}")
-        
-        # Generate audio
-        audio_generator = client.text_to_speech.convert(
-            voice_id=voice_id,
-            text=text,
-            model_id="eleven_multilingual_v2",  # Multilingual model
-            voice_settings=VoiceSettings(
-                stability=0.5,
-                similarity_boost=0.75,
-                style=0.0,
-                use_speaker_boost=True
+    def _generate_speech():
+        try:
+            from elevenlabs import VoiceSettings
+            from elevenlabs.client import ElevenLabs
+            
+            client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+            
+            # Language-specific voice mapping (ElevenLabs supports multilingual voices)
+            # Using multilingual voices that work well with different languages
+            voice_map = {
+                'hi': 'pNInz6obpgDQGcFmaJgB',  # Adam - works well with Hindi
+                'bn': 'pNInz6obpgDQGcFmaJgB',  # Bengali
+                'ta': 'pNInz6obpgDQGcFmaJgB',  # Tamil
+                'te': 'pNInz6obpgDQGcFmaJgB',  # Telugu
+                'es': 'EXAVITQu4vr4xnSDxMaL',  # Bella - Spanish
+                'fr': 'EXAVITQu4vr4xnSDxMaL',  # French
+                'de': 'pNInz6obpgDQGcFmaJgB',  # German
+                'zh': 'pNInz6obpgDQGcFmaJgB',  # Chinese
+                'ja': 'pNInz6obpgDQGcFmaJgB',  # Japanese
+                'ar': 'pNInz6obpgDQGcFmaJgB',  # Arabic
+            }
+            
+            voice_id = voice_map.get(language_code, ELEVENLABS_VOICE)
+            
+            logger.info(f"🎤 Generating speech for: '{text[:50]}...' | Language: {language_code} | Voice: {voice_id}")
+            
+            # Generate audio
+            audio_generator = client.text_to_speech.convert(
+                voice_id=voice_id,
+                text=text,
+                model_id="eleven_multilingual_v2",  # Multilingual model
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    use_speaker_boost=True
+                )
             )
-        )
-        
-        # Collect audio chunks
-        audio_chunks = []
-        chunk_count = 0
-        for chunk in audio_generator:
-            if chunk:
-                audio_chunks.append(chunk)
-                chunk_count += 1
-        
-        if not audio_chunks:
-            logger.error("❌ No audio generated from ElevenLabs")
+            
+            # Collect audio chunks
+            audio_chunks = []
+            chunk_count = 0
+            for chunk in audio_generator:
+                if chunk:
+                    audio_chunks.append(chunk)
+                    chunk_count += 1
+            
+            if not audio_chunks:
+                logger.error("❌ No audio generated from ElevenLabs")
+                return None
+            
+            audio_data = b"".join(audio_chunks)
+            logger.info(f"✅ Generated {len(audio_data)} bytes of audio from {chunk_count} chunks")
+            
+            return audio_data
+            
+        except ImportError:
+            logger.error("❌ ElevenLabs library not installed. Install with: pip install elevenlabs")
             return None
+        except Exception as e:
+            logger.error(f"❌ ElevenLabs TTS error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    # Run blocking TTS generation in a thread to avoid blocking the event loop
+    return await asyncio.to_thread(_generate_speech)
+
+
+def process_audio_for_clients(audio_data: bytes) -> dict:
+    """Process audio data for both browser (16kHz PCM) and phone (8kHz uLaw)"""
+    result = {
+        "browser_audio": None,
+        "phone_chunks": []
+    }
+    
+    try:
+        from pydub import AudioSegment
+        import io
         
-        audio_data = b"".join(audio_chunks)
-        logger.info(f"✅ Generated {len(audio_data)} bytes of audio from {chunk_count} chunks")
+        # Load audio (MP3 or other)
+        try:
+            audio_segment = AudioSegment.from_file(io.BytesIO(audio_data))
+        except Exception:
+            # Fallback to mp3
+            audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_data))
+            
+        # 1. Process for Browser (16kHz PCM16)
+        browser_segment = audio_segment.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        pcm_16khz = browser_segment.raw_data
+        result["browser_audio"] = base64.b64encode(pcm_16khz).decode("utf-8")
         
-        return audio_data
+        # 2. Process for Phone (8kHz uLaw)
+        phone_segment = audio_segment.set_frame_rate(8000).set_channels(1).set_sample_width(2)
+        pcm_8khz = phone_segment.raw_data
         
-    except ImportError:
-        logger.error("❌ ElevenLabs library not installed. Install with: pip install elevenlabs")
-        return None
+        # Convert to uLaw
+        ulaw_data = audioop.lin2ulaw(pcm_8khz, 2)
+        
+        # Chunking
+        chunk_size = 160  # 20ms
+        for i in range(0, len(ulaw_data), chunk_size):
+            chunk = ulaw_data[i:i + chunk_size]
+            if len(chunk) == chunk_size:
+                result["phone_chunks"].append(base64.b64encode(chunk).decode("utf-8"))
+                
     except Exception as e:
-        logger.error(f"❌ ElevenLabs TTS error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+        logger.error(f"Audio processing error: {e}")
+        
+    return result
 
 
-async def convert_and_queue_translated_audio(text: str, language_code: str, caller_number: str):
+async def convert_and_queue_translated_audio(text: str, language_code: str, caller_number: str, call_sid: str = None):
     """Convert translated text to speech and queue it for phone delivery"""
     try:
         # Import Sarvam TTS hybrid function
@@ -742,71 +823,57 @@ async def convert_and_queue_translated_audio(text: str, language_code: str, call
         if not audio_mp3:
             logger.warning("Failed to generate audio, skipping")
             return
+
+        # Process audio in a thread to avoid blocking
+        processed = await asyncio.to_thread(process_audio_for_clients, audio_mp3)
         
-        # Convert MP3 to PCM16 at 16kHz using pydub
-        try:
-            from pydub import AudioSegment
-            import io
+        # 1. Send to browser (16kHz PCM16)
+        if caller_number in transcription_clients and processed["browser_audio"]:
+            audio_message = {
+                "type": "audio",
+                "audio": processed["browser_audio"],
+                "sample_rate": 16000,
+                "encoding": "pcm16",
+                "timestamp": datetime.now().isoformat(),
+                "call_sid": call_sid,
+                "speaker": "Dispatch (Translated)"
+            }
             
-            # Load MP3 audio
-            audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_mp3))
-            
-            # Convert to 8kHz mono PCM16 (Twilio's native format)
-            audio_segment = audio_segment.set_frame_rate(8000).set_channels(1).set_sample_width(2)
-            
-            # Get raw PCM data
-            pcm_8khz = audio_segment.raw_data
-            
-            # Convert to μ-law for Twilio
-            ulaw_data = audioop.lin2ulaw(pcm_8khz, 2)
-            
-            # Split into 20ms chunks (160 bytes at 8kHz μ-law = 20ms)
-            # Twilio expects audio in small chunks, not all at once
-            chunk_size = 160  # 20ms of μ-law audio at 8kHz
-            total_chunks = len(ulaw_data) // chunk_size
-            
-            logger.info(f"📤 Queueing {total_chunks} audio chunks for {caller_number} ({language_code})")
-            logger.info(f"📊 Queue size before queueing: {audio_to_phone.qsize()}")
+            for client in list(transcription_clients[caller_number]):
+                try:
+                    await client.send_json(audio_message)
+                except Exception as e:
+                    logger.error(f"Failed to send translated audio to browser: {e}")
+                    transcription_clients[caller_number].discard(client)
+        
+        # 2. Queue for phone (8kHz uLaw)
+        chunks = processed["phone_chunks"]
+        if chunks:
+            logger.info(f"📤 Queueing {len(chunks)} audio chunks for {caller_number} ({language_code})")
             
             chunks_queued = 0
-            for i in range(0, len(ulaw_data), chunk_size):
-                chunk = ulaw_data[i:i + chunk_size]
-                
-                # Only queue full chunks (skip partial last chunk)
-                if len(chunk) == chunk_size:
-                    chunk_base64 = base64.b64encode(chunk).decode("utf-8")
-                    
+            for chunk_base64 in chunks:
+                try:
+                    audio_to_phone.put_nowait(chunk_base64)
+                    chunks_queued += 1
+                except Exception:
+                    # Queue full, drop oldest and add new
                     try:
+                        audio_to_phone.get_nowait()
                         audio_to_phone.put_nowait(chunk_base64)
                         chunks_queued += 1
-                    except Exception as e:
-                        # Queue full, drop oldest and add new
-                        logger.warning(f"Queue full ({audio_to_phone.qsize()}), dropping oldest chunk")
-                        try:
-                            audio_to_phone.get_nowait()
-                            audio_to_phone.put_nowait(chunk_base64)
-                            chunks_queued += 1
-                        except Exception as e2:
-                            logger.warning(f"Failed to queue chunk {i//chunk_size}: {e2}")
-                            pass
+                    except Exception:
+                        pass
             
-            logger.info(f"✅ Queued {chunks_queued}/{total_chunks} translated audio chunks for {caller_number}")
-            logger.info(f"📊 Queue size after queueing: {audio_to_phone.qsize()}")
+            logger.info(f"✅ Queued {chunks_queued} translated audio chunks for {caller_number}")
                     
-        except ImportError:
-            logger.error("pydub not installed. Install with: pip install pydub")
-        except Exception as e:
-            logger.error(f"Audio conversion error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
     except Exception as e:
         logger.error(f"Error in convert_and_queue_translated_audio: {e}")
         import traceback
         logger.error(traceback.format_exc())
 
 
-async def convert_and_queue_ai_audio(text: str, language_code: str, caller_number: str):
+async def convert_and_queue_ai_audio(text: str, language_code: str, caller_number: str, call_sid: str = None):
     """Convert AI text to speech using ElevenLabs and queue it for phone delivery"""
     try:
         # Generate speech using ElevenLabs
@@ -815,54 +882,49 @@ async def convert_and_queue_ai_audio(text: str, language_code: str, caller_numbe
         if not audio_mp3:
             logger.warning("Failed to generate AI audio, skipping")
             return
+
+        # Process audio in a thread to avoid blocking
+        processed = await asyncio.to_thread(process_audio_for_clients, audio_mp3)
         
-        # Convert MP3 to PCM16 at 8kHz using pydub (Twilio format)
-        try:
-            from pydub import AudioSegment
-            import io
+        # 1. Send to browser (16kHz PCM16)
+        if caller_number in transcription_clients and processed["browser_audio"]:
+            audio_message = {
+                "type": "audio",
+                "audio": processed["browser_audio"],
+                "sample_rate": 16000,
+                "encoding": "pcm16",
+                "timestamp": datetime.now().isoformat(),
+                "call_sid": call_sid,
+                "speaker": "AI Agent"
+            }
             
-            # Load MP3 audio
-            audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_mp3))
-            
-            # Convert to 8kHz mono PCM16 (Twilio's native format)
-            audio_segment = audio_segment.set_frame_rate(8000).set_channels(1).set_sample_width(2)
-            
-            # Get raw PCM data
-            pcm_8khz = audio_segment.raw_data
-            
-            # Convert to μ-law for Twilio
-            ulaw_data = audioop.lin2ulaw(pcm_8khz, 2)
-            
-            # Split into 20ms chunks (160 bytes at 8kHz μ-law = 20ms)
-            chunk_size = 160
-            total_chunks = len(ulaw_data) // chunk_size
-            
-            logger.info(f"🤖 Queueing {total_chunks} AI audio chunks for {caller_number}")
+            for client in list(transcription_clients[caller_number]):
+                try:
+                    await client.send_json(audio_message)
+                except Exception as e:
+                    logger.error(f"Failed to send AI audio to browser: {e}")
+                    transcription_clients[caller_number].discard(client)
+        
+        # 2. Queue for phone (8kHz uLaw)
+        chunks = processed["phone_chunks"]
+        if chunks:
+            logger.info(f"🤖 Queueing {len(chunks)} AI audio chunks for {caller_number}")
             
             chunks_queued = 0
-            for i in range(0, len(ulaw_data), chunk_size):
-                chunk = ulaw_data[i:i + chunk_size]
-                
-                if len(chunk) == chunk_size:
-                    chunk_base64 = base64.b64encode(chunk).decode("utf-8")
+            for chunk_base64 in chunks:
+                try:
+                    audio_to_phone.put_nowait(chunk_base64)
+                    chunks_queued += 1
+                except Exception:
+                    # If queue full, try to make space
                     try:
+                        audio_to_phone.get_nowait()
                         audio_to_phone.put_nowait(chunk_base64)
                         chunks_queued += 1
                     except Exception:
-                        # If queue full, try to make space
-                        try:
-                            audio_to_phone.get_nowait()
-                            audio_to_phone.put_nowait(chunk_base64)
-                            chunks_queued += 1
-                        except Exception:
-                            pass
+                        pass
             
             logger.info(f"✅ Queued {chunks_queued} AI audio chunks")
-                    
-        except ImportError:
-            logger.error("pydub not installed")
-        except Exception as e:
-            logger.error(f"Error converting AI audio: {e}")
             
     except Exception as e:
         logger.error(f"Error in convert_and_queue_ai_audio: {e}")
@@ -897,7 +959,7 @@ class DeepgramRealtimeTranscriber:
             f"&sample_rate={RATE}"
             f"&channels={CHANNELS}"
             f"&interim_results=true"  # Get partial results for faster feedback
-            f"&endpointing=100"  # Faster endpoint detection (100ms)
+            f"&endpointing=800"  # Wait 800ms of silence before finalizing (better for complete sentences)
             f"&vad_events=true"  # Voice activity detection
             f"&punctuate=true"
             f"&smart_format=true"
@@ -1047,7 +1109,7 @@ class DeepgramRealtimeTranscriber:
                     
                     # Convert translated text to speech in caller's language and queue for phone
                     logger.info(f"🎤 Starting TTS for translated text in {caller_lang}: {translated_text[:50]}...")
-                    await convert_and_queue_translated_audio(translated_text, caller_lang, self.caller_number)
+                    await convert_and_queue_translated_audio(translated_text, caller_lang, self.caller_number, self.call_sid)
                     logger.info(f"✅ TTS completed and queued for {self.caller_number}")
                 else:
                     logger.warning(f"⚠️ Translation returned same text or failed: {translated_text}")
@@ -1320,34 +1382,23 @@ class DeepgramRealtimeTranscriber:
                             self.event_loop
                         )
                     
-                    # Handle AI Agent logic
-                    if self.rudra_agent and not self.rudra_agent.call_transferred:
-                         if self.event_loop and self.event_loop.is_running():
-                            asyncio.run_coroutine_threadsafe(
-                                self.handle_ai_response(transcript),
-                                self.event_loop
-                            )
-                else:
-                    # For interim results, broadcast normally
-                    if self.event_loop and self.event_loop.is_running():
-                        asyncio.run_coroutine_threadsafe(self.broadcast_to_clients(message_data), self.event_loop)
+                # Handle AI Agent logic
+                # Only process if transcript is final (user finished speaking)
+                if is_final and self.rudra_agent and not self.rudra_agent.call_transferred:
+                     if self.event_loop and self.event_loop.is_running():
+                        # Use create_task instead of run_coroutine_threadsafe if we are already in the loop
+                        # But we are in a sync callback or async loop?
+                        # _receive_loop is async, so we can just await or create_task
+                            asyncio.run_coroutine_threadsafe(self.handle_ai_response(transcript, confidence, detected_lang), self.event_loop)
 
-                # Save to transcript (no logging to terminal)
-                if is_final:
-                    ts = datetime.now().strftime("%H:%M:%S")
-                    final_line = f"[{ts}] [{self.speaker_label}]: {transcript}"
-                    self.full_transcript.append(final_line)
-
-        except asyncio.CancelledError:
-            pass
         except Exception as e:
-            logger.error(f"❌ Error receiving from Deepgram for {self.speaker_label}: {e}")
+            logger.error(f"❌ Error in Deepgram receive loop for {self.speaker_label}: {e}")
 
-    def stream_audio(self, audio_data: bytes):
-        """Queue audio bytes (PCM16) to be sent to Deepgram"""
+    def process_audio(self, audio_data):
+        """Add audio data to the queue for sending to Deepgram"""
         if not self.is_active:
-            # If not connected, we can drop or attempt to queue (but queue requires loop)
             return
+
         try:
             self.audio_queue.put_nowait(audio_data)
         except Exception:
@@ -1357,6 +1408,10 @@ class DeepgramRealtimeTranscriber:
                 self.audio_queue.put_nowait(audio_data)
             except Exception:
                 pass
+
+    def stream_audio(self, audio_data):
+        """Alias for process_audio to match expected interface"""
+        self.process_audio(audio_data)
 
     async def stop(self):
         """Stop Deepgram transcription session"""
@@ -1406,36 +1461,41 @@ class DeepgramRealtimeTranscriber:
         #     except Exception as e:
         #         logger.error(f"Failed to save transcript: {e}")
 
-    async def handle_ai_response(self, transcript: str):
+    async def handle_ai_response(self, transcript: str, confidence: float = 1.0, language_code: str = 'en'):
         """Handle AI Agent response generation"""
         if not self.rudra_agent:
             return
 
+        # Use detected language or fallback to English
+        lang = language_code if language_code else 'en'
+
+        # Filter out noise and short transcripts
+        cleaned_transcript = transcript.strip().lower()
+        
+        # Ignore empty or single-character noise (unless it's 'i' which might be valid but usually part of sentence)
+        # "no" is 2 chars, "yes" is 3. So < 2 filters single letters.
+        if not cleaned_transcript or len(cleaned_transcript) < 2:
+            logger.info(f"🔇 Ignoring very short transcript: '{transcript}'")
+            return
+            
+        # Ignore common filler words if they are the only content
+        fillers = {"uh", "um", "ah", "huh", "hmm", "er"}
+        if cleaned_transcript in fillers:
+            logger.info(f"🔇 Ignoring filler word: '{transcript}'")
+            return
+
+        if confidence is not None and confidence < 0.6:
+            logger.info(f"🔇 Ignoring low confidence transcript ({confidence}): '{transcript}'")
+            return
+
         try:
             # Run blocking agent logic in thread
-            response_text, transferred = await asyncio.to_thread(self.rudra_agent.process_input, transcript)
+            response_text, transferred, tool_used = await asyncio.to_thread(self.rudra_agent.process_input, transcript)
             
-            if transferred:
-                logger.info("🚨 Call transferred to human dispatcher by AI Agent")
-                # Play transfer message
-                await convert_and_queue_ai_audio("I am transferring you to a human dispatcher now. Please hold.", "en", self.caller_number)
-                
-                # Broadcast transfer event to frontend
-                await self.broadcast_to_clients({
-                    "type": "ai_transfer",
-                    "call_sid": self.call_sid,
-                    "timestamp": datetime.now().isoformat(),
-                    "reason": "ai_decision"
-                })
-
-                # Stop AI agent from processing further
-                # The rudra_agent.call_transferred flag is already set, so subsequent calls will be ignored or return transferred=True
-                return
-
+            # Broadcast AI response to clients FIRST (regardless of transfer status)
             if response_text:
                 logger.info(f"🤖 AI Agent response: {response_text}")
                 
-                # Broadcast AI response to clients FIRST (before audio generation)
                 await self.broadcast_to_clients({
                     "speaker": "AI Agent",
                     "message": response_text,
@@ -1450,11 +1510,107 @@ class DeepgramRealtimeTranscriber:
                 # Save to database as AI response (buffered)
                 if self.call_sid:
                     await self.buffer_transcript(
-                        "AI Agent", response_text, None, "en"
+                        "AI Agent", response_text, None, lang
                     )
+            
+            # Queue audio for the initial response IMMEDIATELY (before any tool waiting)
+            # This ensures the user hears "I have sent a link..." before the silence of waiting.
+            if response_text:
+                await convert_and_queue_ai_audio(response_text, lang, self.caller_number, self.call_sid)
+            
+            # Handle tool usage events
+            if tool_used == "send_location_link":
+                logger.info(f"📡 Broadcasting location_link_sent event for {self.caller_number}")
+                await self.broadcast_to_clients({
+                    "type": "system_event",
+                    "event": "location_link_sent",
+                    "caller_number": self.caller_number,
+                    "timestamp": datetime.now().isoformat()
+                })
                 
-                # Then convert to speech and queue audio
-                await convert_and_queue_ai_audio(response_text, "en", self.caller_number)
+                # Wait for location update (polling)
+                # We do this AFTER the initial response is queued so the user hears "I sent the link" first.
+                # We spawn this as a background task so we don't block the main flow if we wanted to return early,
+                # but here we are inside handle_ai_response which is already async and we WANT to block the AI from
+                # processing new input until we know the location status (or timeout).
+                # However, blocking here means we won't process new audio from user.
+                # If the user says "I got it" while we are waiting, we might miss it if we block too hard?
+                # No, Deepgram is sending transcripts via WS. If we block here, we won't process the NEXT transcript
+                # until this returns. That is actually GOOD behavior - we want to focus on location.
+                
+                logger.info("⏳ Waiting for location update...")
+                start_time = time.time()
+                timeout = 15  # Wait up to 15 seconds
+                location_received = False
+                
+                # Non-blocking wait loop
+                while time.time() - start_time < timeout:
+                    if self.rudra_agent.location_details:
+                        location_received = True
+                        break
+                    await asyncio.sleep(1)
+                    
+                if location_received:
+                    follow_up_text = f"I have received your location: {self.rudra_agent.location_details}. Thank you."
+                    logger.info(f"✅ Location received during wait: {self.rudra_agent.location_details}")
+                    
+                    # Broadcast follow-up response
+                    await self.broadcast_to_clients({
+                        "speaker": "AI Agent",
+                        "message": follow_up_text,
+                        "timestamp": datetime.now().isoformat(),
+                        "caller_number": self.caller_number,
+                        "is_final": True,
+                        "type": "transcription",
+                        "language": lang,
+                        "translation_needed": False
+                    })
+                    
+                    # Queue audio for follow-up
+                    await convert_and_queue_ai_audio(follow_up_text, lang, self.caller_number, self.call_sid)
+                    
+                    # Buffer transcript
+                    await self.buffer_transcript("AI Agent", follow_up_text, None, lang)
+                    
+                    # Update chat history so AI knows it said this
+                    self.rudra_agent.chat_history.append({"role": "assistant", "content": follow_up_text})
+                else:
+                    logger.info("⏳ Location wait timed out - no follow up needed, user will respond")
+
+            if transferred:
+                logger.info("🚨 Call transferred to human dispatcher by AI Agent")
+                
+                # If there was a response text (like "I'm transferring you..."), we already broadcasted it above.
+                # But we might want to ensure the audio for it is played OR the specific transfer message.
+                
+                # If response_text was generic error, we might want to override audio?
+                # But let's stick to the logic: AI spoke, we showed it. Now we transfer.
+                
+                # Play transfer message (or the response text if it was the transfer message)
+                # The original code played a hardcoded message. Let's keep that for safety or use response_text if appropriate.
+                # If response_text is "I'm transferring you...", we don't need to queue another audio if we queue response_text.
+                
+                # However, the original code returned early.
+                # Let's queue the audio for the response_text if it exists.
+                if not response_text:
+                     await convert_and_queue_ai_audio("I am transferring you to a human dispatcher now. Please hold.", lang, self.caller_number, self.call_sid)
+
+                # Broadcast transfer event to frontend
+                await self.broadcast_to_clients({
+                    "type": "ai_transfer",
+                    "call_sid": self.call_sid,
+                    "timestamp": datetime.now().isoformat(),
+                    "reason": "ai_decision"
+                })
+
+                # Stop AI agent from processing further
+                return
+
+            # If NOT transferred, and we have response text, queue audio
+            # ALREADY QUEUED ABOVE
+            # if response_text and not transferred:
+            #    # Then convert to speech and queue audio
+            #    await convert_and_queue_ai_audio(response_text, "en", self.caller_number, self.call_sid)
         except Exception as e:
             logger.error(f"❌ Error in AI response handling: {e}")
 
@@ -1804,6 +1960,35 @@ async def notification_websocket(websocket: WebSocket):
             try:
                 # Add timeout to prevent hanging connections
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                
+                # Parse incoming message
+                try:
+                    message = json.loads(data)
+                    if message.get("type") == "address_update":
+                        call_sid = message.get("call_sid")
+                        address = message.get("address")
+                        
+                        if call_sid and address:
+                            logger.info(f"📍 Received address update for {call_sid}: {address}")
+                            
+                            # Find active transcriber and update RudraAgent
+                            if call_sid in active_transcribers:
+                                transcriber_data = active_transcribers[call_sid]
+                                phone_transcriber = transcriber_data.get("phone_transcriber")
+                                
+                                if phone_transcriber and hasattr(phone_transcriber, "rudra_agent") and phone_transcriber.rudra_agent:
+                                    phone_transcriber.rudra_agent.receive_location_update(address)
+                                    logger.info(f"✅ Updated RudraAgent with address for {call_sid}")
+                                else:
+                                    logger.warning(f"⚠️ RudraAgent not found for {call_sid}")
+                            else:
+                                logger.warning(f"⚠️ Active transcriber not found for {call_sid}")
+                                
+                except json.JSONDecodeError:
+                    pass # Ignore non-JSON messages (like simple pings if any)
+                except Exception as e:
+                    logger.error(f"Error processing notification message: {e}")
+
                 await websocket.send_json({
                     "type": "keepalive",
                     "timestamp": datetime.now().isoformat()
@@ -2033,7 +2218,7 @@ You are simulating an emergency call for a 911 dispatcher training. Your role is
 Begin the call now with your opening line. It should be urgent and give a key detail about the emergency.
         """
 
-        chat = training_client.chats.create(model="gemini-2.5-flash")
+        chat = training_client.chats.create()
         response = chat.send_message(intro_prompt)
         
         # Store session data
@@ -2278,15 +2463,24 @@ async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends
     
     # Find the call_sid for this caller - first check active sessions
     call_sid = None
+    # Normalize input number (remove non-digits)
+    input_number_clean = ''.join(filter(str.isdigit, data.caller_number))
+    
     for sid, session in sessions.items():
-        if session.get("caller_number") == data.caller_number:
+        session_number = session.get("caller_number", "")
+        session_number_clean = ''.join(filter(str.isdigit, session_number))
+        
+        # Check for exact match or suffix match (last 10 digits)
+        if session_number == data.caller_number or \
+           (len(input_number_clean) >= 10 and len(session_number_clean) >= 10 and input_number_clean[-10:] == session_number_clean[-10:]):
             call_sid = sid
-            logger.info(f"📍 Found call_sid in active sessions: {call_sid}")
+            logger.info(f"📍 Found call_sid in active sessions (match): {call_sid}")
             break
     
     # If not found in sessions, check database for most recent call from this number
     if not call_sid:
         try:
+            # Try exact match first
             result = await db.execute(
                 select(Call)
                 .where(Call.caller_number == data.caller_number)
@@ -2296,7 +2490,15 @@ async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends
             recent_call = result.scalars().first()
             if recent_call:
                 call_sid = recent_call.call_sid
-                logger.info(f"📍 Found call_sid in database: {call_sid}")
+                logger.info(f"📍 Found call_sid in database (exact match): {call_sid}")
+            else:
+                # Try fuzzy match (last 10 digits)
+                clean_number = ''.join(filter(str.isdigit, data.caller_number))[-10:]
+                if clean_number:
+                    logger.info(f"📍 Trying fuzzy match for number ending in: {clean_number}")
+                    # This is a bit complex in SQL, so we might need to fetch recent calls and filter in python if volume is low
+                    # Or just rely on the frontend to handle the mapping if backend fails
+                    pass
         except Exception as e:
             logger.error(f"Error finding call in database: {e}")
     
@@ -2308,6 +2510,43 @@ async def receive_location(data: LocationDataRequest, db: AsyncSession = Depends
         asyncio.create_task(save_location_to_db(
             call_sid, data.caller_number, data.latitude, data.longitude, None
         ))
+        
+        # Update RudraAgent immediately with coordinates (and address if possible)
+        if call_sid in active_transcribers:
+            transcriber_data = active_transcribers[call_sid]
+            phone_transcriber = transcriber_data.get("phone_transcriber")
+            
+            if phone_transcriber and hasattr(phone_transcriber, "rudra_agent") and phone_transcriber.rudra_agent:
+                # Try to get address from nearest station logic or just send coordinates
+                # We can use OpenStreetMap Nominatim for server-side reverse geocoding
+                try:
+                    # Simple reverse geocoding using OSM (no API key required, but rate limited)
+                    # Use a proper User-Agent as required by OSM policy
+                    headers = {'User-Agent': 'RudraOne/1.0'}
+                    url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={data.latitude}&lon={data.longitude}&zoom=18&addressdetails=1"
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, headers=headers) as resp:
+                            if resp.status == 200:
+                                geo_data = await resp.json()
+                                address = geo_data.get('display_name')
+                                if address:
+                                    logger.info(f"📍 Server-side reverse geocoding success: {address}")
+                                    phone_transcriber.rudra_agent.receive_location_update(address)
+                                else:
+                                    # Fallback to coordinates
+                                    phone_transcriber.rudra_agent.receive_location_update(f"Latitude: {data.latitude}, Longitude: {data.longitude}")
+                            else:
+                                # Fallback to coordinates
+                                phone_transcriber.rudra_agent.receive_location_update(f"Latitude: {data.latitude}, Longitude: {data.longitude}")
+                except Exception as e:
+                    logger.error(f"Server-side geocoding failed: {e}")
+                    # Fallback to coordinates
+                    phone_transcriber.rudra_agent.receive_location_update(f"Latitude: {data.latitude}, Longitude: {data.longitude}")
+            else:
+                logger.warning(f"⚠️ RudraAgent not found for call_sid {call_sid}")
+        else:
+            logger.warning(f"⚠️ Call SID {call_sid} not found in active_transcribers. Keys: {list(active_transcribers.keys())}")
     
     # Broadcast to all connected notification clients (dashboard)
     logger.info(f"📍 Broadcasting location to {len(notification_clients)} clients")
@@ -2688,7 +2927,25 @@ async def websocket_endpoint(websocket: WebSocket):
                     }
                     
                     # Initialize Rudra Agent for this call
-                    rudra_agent = RudraAgent()
+                    public_url = getattr(app.state, "public_url", None)
+                    rudra_agent = RudraAgent(caller_number, call_sid, public_url=public_url)
+                    
+                    # Check for existing location in DB
+                    try:
+                        async with AsyncSessionLocal() as db:
+                            result = await db.execute(
+                                select(LocationData)
+                                .where(LocationData.caller_number == caller_number)
+                                .order_by(LocationData.timestamp.desc())
+                                .limit(1)
+                            )
+                            location_data = result.scalars().first()
+                            if location_data:
+                                address = location_data.address or f"Lat: {location_data.latitude}, Lon: {location_data.longitude}"
+                                logger.info(f"📍 Found existing location for {caller_number}: {address}")
+                                rudra_agent.receive_location_update(address)
+                    except Exception as e:
+                        logger.error(f"Error checking existing location: {e}")
                     
                     # Phone transcriber for CALLER audio
                     phone_transcriber = DeepgramRealtimeTranscriber("CALLER", caller_number, loop, call_sid, rudra_agent=rudra_agent)
@@ -2700,7 +2957,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.info("✅ LIVE transcription active (Browser + Phone)")
                     
                     # Initial greeting from AI Agent
-                    greeting = "112 Emergency Services, what is your emergency?"
+                    greeting = "I am a 112 Emergency AI system and I am here to assist you."
                     logger.info(f"🤖 AI Agent greeting: {greeting}")
                     
                     # Broadcast greeting to clients FIRST (before audio generation)
@@ -2720,8 +2977,48 @@ async def websocket_endpoint(websocket: WebSocket):
                         "AI Agent", greeting, None, "en"
                     )
                     
-                    # Then generate and queue audio
-                    await convert_and_queue_ai_audio(greeting, "en", caller_number)
+                    # Play pre-recorded audio (Instant start)
+                    try:
+                        # 1. Queue for Phone (Twilio)
+                        with open("static/greeting_twilio.bin", "rb") as f:
+                            ulaw_data = f.read()
+                            
+                        chunk_size = 160
+                        chunks_queued = 0
+                        for i in range(0, len(ulaw_data), chunk_size):
+                            chunk = ulaw_data[i:i + chunk_size]
+                            if len(chunk) == chunk_size:
+                                chunk_base64 = base64.b64encode(chunk).decode("utf-8")
+                                audio_to_phone.put_nowait(chunk_base64)
+                                chunks_queued += 1
+                        logger.info(f"✅ Queued {chunks_queued} chunks of pre-recorded greeting to phone")
+
+                        # 2. Send to Browser
+                        if caller_number in transcription_clients:
+                            with open("static/greeting_browser.bin", "rb") as f:
+                                pcm_16khz = f.read()
+                                
+                            payload_16khz = base64.b64encode(pcm_16khz).decode("utf-8")
+                            audio_message = {
+                                "type": "audio",
+                                "audio": payload_16khz,
+                                "sample_rate": 16000,
+                                "encoding": "pcm16",
+                                "timestamp": datetime.now().isoformat(),
+                                "call_sid": call_sid,
+                                "speaker": "AI Agent"
+                            }
+                            for client in list(transcription_clients[caller_number]):
+                                try:
+                                    await client.send_json(audio_message)
+                                except Exception:
+                                    pass
+                            logger.info(f"✅ Sent pre-recorded greeting to browser")
+                            
+                    except Exception as e:
+                        logger.error(f"❌ Failed to play pre-recorded greeting: {e}")
+                        # Fallback to generating it
+                        await convert_and_queue_ai_audio(greeting, "en", caller_number, call_sid)
                 else:
                     logger.warning("⚠️  Transcription disabled (no Deepgram API key)")
 
@@ -2808,7 +3105,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "sample_rate": RATE,  # Indicate this is 16kHz
                                     "encoding": "pcm16",   # Raw PCM16, not μ-law
                                     "timestamp": datetime.now().isoformat(),
-                                    "call_sid": call_sid
+                                    "call_sid": call_sid,
+                                    "speaker": "Caller"
                                 }
                                 for client in list(transcription_clients[caller_number]):
                                     try:

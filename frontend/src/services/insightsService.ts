@@ -5,6 +5,51 @@
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+// Simple OpenAI client implementation to avoid adding heavy dependencies
+class OpenAIClient {
+  private apiKey: string;
+  private model: string;
+
+  constructor(apiKey: string, model: string) {
+    this.apiKey = apiKey;
+    this.model = model;
+  }
+
+  async generateContent(prompt: string): Promise<{ response: { text: () => string } }> {
+    try {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.2
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`OpenAI API Error: ${errorData.error?.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      const text = data.choices[0]?.message?.content || "";
+
+      return {
+        response: {
+          text: () => text
+        }
+      };
+    } catch (error) {
+      console.error("OpenAI Request Failed:", error);
+      throw error;
+    }
+  }
+}
+
 const BASE_PROMPT = `
 You are a professional emergency dispatch intelligence system analyzing caller statements to extract critical information for incident investigation and response coordination.
 
@@ -112,14 +157,23 @@ export interface InsightsData {
 }
 
 export class InsightsExtractor {
-  private genAI: GoogleGenerativeAI;
+  private genAI: GoogleGenerativeAI | null = null;
+  private openAI: OpenAIClient | null = null;
   private model: any;
+  private provider: "google" | "openai";
   private conversationHistory: Map<string, InsightsData>;
 
-  constructor(apiKey: string) {
-    this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  constructor(apiKey: string, provider: "google" | "openai" = "google", modelName?: string) {
+    this.provider = provider;
     this.conversationHistory = new Map();
+
+    if (provider === "google") {
+      this.genAI = new GoogleGenerativeAI(apiKey);
+      this.model = this.genAI.getGenerativeModel({ model: modelName || "gemini-2.5-flash" });
+    } else {
+      this.openAI = new OpenAIClient(apiKey, modelName || "gpt-4o");
+      this.model = this.openAI; // Both have generateContent method with compatible signature
+    }
   }
 
   private buildExtractionPrompt(sentence: string, existingData?: InsightsData): string {
@@ -298,11 +352,32 @@ let insightsExtractorInstance: InsightsExtractor | null = null;
 
 export function getInsightsExtractor(apiKey?: string): InsightsExtractor {
   if (!insightsExtractorInstance) {
-    const key = apiKey || import.meta.env.VITE_GOOGLE_API_KEY;
-    if (!key) {
-      throw new Error("Google API Key is required. Set VITE_GOOGLE_API_KEY in .env");
+    const provider = (import.meta.env.VITE_TRAINING_AI_PROVIDER || "google").toLowerCase() as "google" | "openai";
+    
+    let key = apiKey;
+    let modelName = "";
+
+    if (provider === "google") {
+      key = key || import.meta.env.VITE_GOOGLE_API_KEY;
+      modelName = import.meta.env.VITE_TRAINING_GOOGLE_MODEL || "gemini-2.5-flash";
+      if (!key) {
+        throw new Error("Google API Key is required. Set VITE_GOOGLE_API_KEY in .env");
+      }
+    } else {
+      key = key || import.meta.env.VITE_OPENAI_API_KEY;
+      modelName = import.meta.env.VITE_TRAINING_OPENAI_MODEL || "gpt-4o";
+      if (!key) {
+        console.warn("OpenAI API Key is missing. Set VITE_OPENAI_API_KEY in .env");
+        // Fallback to Google if OpenAI key is missing but Google key exists
+        if (import.meta.env.VITE_GOOGLE_API_KEY) {
+          console.log("Falling back to Google Gemini");
+          return new InsightsExtractor(import.meta.env.VITE_GOOGLE_API_KEY, "google", import.meta.env.VITE_TRAINING_GOOGLE_MODEL);
+        }
+        throw new Error("OpenAI API Key is required. Set VITE_OPENAI_API_KEY in .env");
+      }
     }
-    insightsExtractorInstance = new InsightsExtractor(key);
+    
+    insightsExtractorInstance = new InsightsExtractor(key, provider, modelName);
   }
   return insightsExtractorInstance;
 }

@@ -217,6 +217,49 @@ export const Dashboard = () => {
   const [isAiActive, setIsAiActive] = useState(true); // Track if AI agent is active
   const [hasBeenTransferred, setHasBeenTransferred] = useState(false); // Track if call has been transferred to human
   const [isCallerMuted, setIsCallerMuted] = useState(true); // Track if caller audio is muted
+  const [isAiAudioEnabled, setIsAiAudioEnabled] = useState(false); // Track if AI audio is enabled (default false)
+
+  // Analytics State
+  const [analyticsMessages, setAnalyticsMessages] = useState<Array<{role: 'user' | 'assistant', type: 'text' | 'html', content: string}>>([]);
+  const [analyticsInput, setAnalyticsInput] = useState('');
+  const [isAnalyticsLoading, setIsAnalyticsLoading] = useState(false);
+  const analyticsEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    analyticsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [analyticsMessages, isAnalyticsLoading]);
+
+  const handleAnalyticsSubmit = async () => {
+    if (!analyticsInput.trim()) return;
+    
+    const userMessage = analyticsInput;
+    setAnalyticsInput('');
+    setAnalyticsMessages(prev => [...prev, { role: 'user', type: 'text', content: userMessage }]);
+    setIsAnalyticsLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/analytics/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage })
+      });
+      
+      if (!response.ok) throw new Error('Failed to fetch');
+      
+      const data = await response.json();
+      setAnalyticsMessages(prev => [...prev, { role: 'assistant', type: data.type, content: data.content }]);
+    } catch (error) {
+      console.error("Analytics error:", error);
+      setAnalyticsMessages(prev => [...prev, { role: 'assistant', type: 'text', content: "Sorry, I encountered an error processing your request." }]);
+    } finally {
+      setIsAnalyticsLoading(false);
+    }
+  };
+
   const [forwardingNumber, setForwardingNumber] = useState("");
   const [isForwardingEnabled, setIsForwardingEnabled] = useState(false);
 
@@ -423,6 +466,14 @@ export const Dashboard = () => {
       { sender: "Dispatch", time: "2:36 AM", message: "You're welcome. Have a good evening." },
     ];
   });
+
+  // Debug: Log conversation updates
+  useEffect(() => {
+    console.log('🔄 Conversation state updated:', conversation.length, 'messages');
+    if (conversation.length > 0) {
+      console.log('Last message:', conversation[conversation.length - 1]);
+    }
+  }, [conversation]);
   const [isMicActive, setIsMicActive] = useState(false);
   const audioServiceRef = useRef<AudioService | null>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
@@ -519,6 +570,8 @@ export const Dashboard = () => {
   });
   const [isTrainingInProgress, setIsTrainingInProgress] = useState(false);
   const [trainingStartTime, setTrainingStartTime] = useState<number | null>(null);
+  const [hasGeneratedTrainingAIQuestions, setHasGeneratedTrainingAIQuestions] = useState(false);
+  const [trainingUpdateTrigger, setTrainingUpdateTrigger] = useState(0);
   const [trainingConfidence, setTrainingConfidence] = useState<number | null>(() => {
     const saved = localStorage.getItem('trainingConfidence');
     return saved ? JSON.parse(saved) : null;
@@ -561,7 +614,27 @@ export const Dashboard = () => {
     { number: '+917795075436', timestamp: new Date().toISOString() }
   ]);
   const [selectedMessage, setSelectedMessage] = useState<string | null>(null);
-  const [linkSent, setLinkSent] = useState<{ [key: string]: boolean }>({});
+  const [linkSent, setLinkSent] = useState<{ [key: string]: number }>({}); // Store timestamp of when link was sent
+  
+  // Cleanup old linkSent states (timeout after 60 seconds)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setLinkSent(prev => {
+        const newState = { ...prev };
+        let changed = false;
+        Object.keys(newState).forEach(key => {
+          if (now - newState[key] > 60000) { // 60 seconds timeout
+            delete newState[key];
+            changed = true;
+          }
+        });
+        return changed ? newState : prev;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const [locationData, setLocationData] = useState<{ [call_sid: string]: { latitude: number, longitude: number, address?: string, timestamp: string } }>(() => {
     const saved = localStorage.getItem('locationData');
     if (saved) {
@@ -1075,6 +1148,41 @@ export const Dashboard = () => {
     }
   }, [conversation, selectedCallerNumber, hasGeneratedAIQuestions]);
 
+  // Auto-check protocol questions for TRAINING based on conversation content
+  useEffect(() => {
+    if (!protocolManagerRef.current || !activeTrainingSession || trainingConversation.length === 0) return;
+
+    const conversationText = trainingConversation.map(msg => msg.message).join(' ');
+
+    // Check and mark questions after every message
+    const result = protocolManagerRef.current.checkAndMarkQuestion(
+      activeTrainingSession,
+      conversationText
+    );
+
+    if (result.updated) {
+      setTrainingUpdateTrigger(prev => prev + 1);
+    }
+
+    // Generate AI questions early based on conversation context (after 2-3 messages)
+    if (!hasGeneratedTrainingAIQuestions && trainingConversation.length >= 3) {
+      setHasGeneratedTrainingAIQuestions(true);
+      setIsGeneratingQuestions(true);
+      protocolManagerRef.current.generateAdditionalQuestions(
+        activeTrainingSession,
+        conversationText
+      ).then(newQuestions => {
+        if (newQuestions.length > 0) {
+          setTrainingUpdateTrigger(prev => prev + 1);
+        }
+      }).catch(error => {
+        console.error("Failed to generate AI questions for training:", error);
+      }).finally(() => {
+        setIsGeneratingQuestions(false);
+      });
+    }
+  }, [trainingConversation, activeTrainingSession, hasGeneratedTrainingAIQuestions]);
+
   // MapBox reverse geocoding helper
   const reverseGeocode = async (latitude: number, longitude: number): Promise<string> => {
     try {
@@ -1106,7 +1214,7 @@ export const Dashboard = () => {
     }
   };
   // WebSocket for call notifications
-  const { isConnected: notificationsConnected } = useWebSocket({
+  const { isConnected: notificationsConnected, sendMessage: sendNotificationMessage } = useWebSocket({
     url: apiService.getWebSocketUrl('/client/notifications'),
     autoReconnect: false, // Disable auto-reconnect to prevent spam
     onOpen: () => {
@@ -1128,6 +1236,16 @@ export const Dashboard = () => {
         if (latitude && longitude) {
           // Reverse geocode to get address
           reverseGeocode(latitude, longitude).then(address => {
+            // Send address back to server for AI
+            if (call_sid && address) {
+              console.log('📤 Sending address update to server for AI:', address);
+              sendNotificationMessage(JSON.stringify({
+                type: 'address_update',
+                call_sid: call_sid,
+                address: address
+              }));
+            }
+
             const locationInfo = {
               latitude,
               longitude,
@@ -1141,10 +1259,17 @@ export const Dashboard = () => {
 
               // If call_sid not provided, find the most recent call from this caller
               if (!targetCallSid && caller_number) {
-                const matchingCall = prevCalls.find(call => call.phone === caller_number);
+                // Normalize caller number (remove spaces, dashes, etc.)
+                const normalizedCaller = caller_number.replace(/\D/g, '');
+                
+                const matchingCall = prevCalls.find(call => {
+                  const normalizedCallPhone = call.phone.replace(/\D/g, '');
+                  return normalizedCallPhone.includes(normalizedCaller) || normalizedCaller.includes(normalizedCallPhone);
+                });
+                
                 if (matchingCall && matchingCall.call_sid) {
                   targetCallSid = matchingCall.call_sid;
-                  console.log('📍 Found call_sid from calls list:', targetCallSid);
+                  console.log('📍 Found call_sid from calls list (fuzzy match):', targetCallSid);
                 }
               }
 
@@ -1158,6 +1283,15 @@ export const Dashboard = () => {
                   console.log('📍 Updated locationData state:', updated);
                   return updated;
                 });
+                
+                // Also clear the "Link Sent" state for this number since we have the location now
+                if (caller_number) {
+                   setLinkSent(prev => {
+                     const newState = { ...prev };
+                     delete newState[caller_number];
+                     return newState;
+                   });
+                }
 
                 // Show toast notification only if call is live
                 const targetCall = prevCalls.find(c => c.call_sid === targetCallSid);
@@ -1395,8 +1529,8 @@ export const Dashboard = () => {
       // Log all message types
       if (message.type === 'audio') {
         // Only log audio occasionally to avoid spam
-        if (Math.random() < 0.05) {
-          console.log('📨 Audio message:', {
+        if (Math.random() < 0.001) {
+          console.log('📨 Audio message (sample):', {
             audioLength: message.audio?.length,
             encoding: (message as any).encoding,
             sampleRate: (message as any).sample_rate,
@@ -1411,6 +1545,12 @@ export const Dashboard = () => {
         // Only play audio if it matches the selected call SID
         // This prevents hearing multiple audio streams if there are multiple active calls from the same number
         if (message.call_sid && selectedCallSid && message.call_sid !== selectedCallSid) {
+          return;
+        }
+
+        // Check if this is AI audio and if AI audio is disabled
+        const speaker = (message as any).speaker;
+        if ((speaker === 'AI Agent' || speaker === 'Dispatch (Translated)') && !isAiAudioEnabled) {
           return;
         }
 
@@ -1440,7 +1580,24 @@ export const Dashboard = () => {
         return;
       }
 
+      // Handle system events (like location link sent)
+      if ((message as any).type === 'system_event') {
+        if ((message as any).event === 'location_link_sent') {
+          console.log('🔗 Location link sent event received for:', (message as any).caller_number);
+          if ((message as any).caller_number) {
+            setLinkSent(prev => ({ ...prev, [(message as any).caller_number]: Date.now() }));
+            toast({
+              title: "✅ Tracking Link Sent (AI)",
+              description: `AI Agent sent location link to ${(message as any).caller_number}`,
+            });
+          }
+        }
+        return;
+      }
+
       if (message.type === 'transcription' && message.speaker && message.message) {
+        console.log('📝 Processing transcription:', message);
+        
         // Translate message based on speaker and selected language
         let translatedMessage = message.message;
         let isTranslated = false;
@@ -1501,14 +1658,26 @@ export const Dashboard = () => {
             console.log('⏭️ DISPATCH message - no translation needed (dispatcher language)');
             translatedMessage = message.message;
             isTranslated = false;
+          } else if (message.speaker === 'AI Agent') {
+             console.log('🤖 AI Agent message - no translation needed');
+             translatedMessage = message.message;
+             isTranslated = false;
           }
         } catch (error) {
           console.error('❌ Translation error:', error);
           // Keep original message if translation fails
         }
 
+        // Determine sender label
+        let senderLabel = 'Dispatch';
+        if (message.speaker === 'CALLER') {
+            senderLabel = 'Caller';
+        } else if (message.speaker === 'AI Agent') {
+            senderLabel = 'AI Agent';
+        }
+
         const newMessage: ConversationMessage = {
-          sender: message.speaker === 'CALLER' ? 'Caller' : 'Dispatch',
+          sender: senderLabel,
           time: new Date(message.timestamp).toLocaleTimeString('en-US', {
             hour: '2-digit',
             minute: '2-digit',
@@ -1528,10 +1697,13 @@ export const Dashboard = () => {
           // Replace any interim message from same speaker with final version
           setConversation(prev => {
             const lastMsg = prev[prev.length - 1];
+            // Check if last message is from same sender and is NOT final (interim)
             if (lastMsg && lastMsg.sender === newMessage.sender && !lastMsg.is_final) {
               // Replace interim with final
+              console.log('🔄 Replacing interim message with final');
               return [...prev.slice(0, -1), newMessage];
             }
+            console.log('➕ Appending final message');
             return [...prev, newMessage];
           });
 
@@ -2048,6 +2220,7 @@ export const Dashboard = () => {
 
       setTrainingLogs(prev => [newTrainingLog, ...prev]);
       setActiveTrainingSession(sessionId);
+      setHasGeneratedTrainingAIQuestions(false);
       setSelectedIncident(0);
 
       // Select random voice for this training session
@@ -3031,9 +3204,26 @@ export const Dashboard = () => {
           console.error('Error loading call history:', error);
         }
       } else {
-        // Clear data for live calls
-        setConversation([]);
-        setLocationData({});
+        // For live calls, we don't want to clear the conversation if we are just re-selecting the same call
+        // But if we are switching to a NEW live call, we should clear it.
+        // Since we already checked `selectedIncident === idx` at the top, we know this is a NEW selection (or re-selection after deselect).
+        
+        // However, if the call was auto-selected, `selectedIncident` might already be set.
+        // Let's only clear if the call SID is different from what we have in memory?
+        // But `conversation` is local state. If we switch calls, we lose it.
+        
+        // The issue is that `handleIncidentClick` might be called when the user clicks the call in the list.
+        // If the user clicks the call while it's live, we don't want to wipe the chat.
+        
+        // If we are here, it means we clicked a live call.
+        // If `selectedCallSid` was already this call, we shouldn't clear.
+        if (selectedCallSid !== call.call_sid) {
+             console.log('🔄 Switching to new live call - clearing conversation');
+             setConversation([]);
+             setLocationData({});
+        } else {
+             console.log('🔄 Re-selected current live call - keeping conversation');
+        }
       }
     }
   };
@@ -3102,7 +3292,7 @@ export const Dashboard = () => {
 
       if (result.success) {
         // Mark as sent
-        setLinkSent(prev => ({ ...prev, [phoneNumber]: true }));
+        setLinkSent(prev => ({ ...prev, [phoneNumber]: Date.now() }));
 
         toast({
           title: "✅ Tracking Link Sent",
@@ -3619,6 +3809,15 @@ export const Dashboard = () => {
                       </SelectContent>
                     </Select>
                     <Button size="sm" className="h-8 bg-[#5B5FED] hover:bg-[#4a4ec0] text-white">Media <ChevronDown className="w-3 h-3 ml-1" /></Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className={`h-8 w-8 p-0 ${isAiAudioEnabled ? 'text-[#5B5FED]' : 'text-gray-400'}`}
+                      onClick={() => setIsAiAudioEnabled(!isAiAudioEnabled)}
+                      title={isAiAudioEnabled ? "Mute AI Audio" : "Unmute AI Audio"}
+                    >
+                      <Volume2 className="w-4 h-4" />
+                    </Button>
                   </div>
                 </div>
                 <div className="mt-3 flex items-center gap-2">
@@ -3644,7 +3843,8 @@ export const Dashboard = () => {
                   </div>
                 </div>
 
-                {conversation.map((msg, idx) => (
+                {conversation && conversation.length > 0 ? (
+                  conversation.map((msg, idx) => (
                   <div key={idx} className={`flex ${msg.sender === 'Dispatch' || msg.sender === 'AI Agent' ? 'justify-end' : 'justify-start'}`}>
                     <div className="max-w-[80%]">
                       <div className={`text-[10px] text-gray-500 mb-1 flex items-center gap-2 ${msg.sender === 'Dispatch' || msg.sender === 'AI Agent' ? 'justify-end' : 'justify-start'
@@ -3683,7 +3883,14 @@ export const Dashboard = () => {
                       </div>
                     </div>
                   </div>
-                ))}
+                ))
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-40 text-gray-500 space-y-2">
+                    <MessageSquare className="w-8 h-8 opacity-20" />
+                    <p className="text-xs">No transcription yet...</p>
+                    <p className="text-[10px] opacity-50">Waiting for speech</p>
+                  </div>
+                )}
 
                 <div ref={conversationEndRef} />
               </div>
@@ -3836,22 +4043,32 @@ export const Dashboard = () => {
                     // Show request button when no location data
                     <>
                       <div className="text-sm text-gray-400 mb-4">Send a link via SMS to receive live GPS location</div>
-                      <Button
-                        onClick={() => {
-                          if (currentCall?.phone) {
-                            handleSendTrackingLink(currentCall.phone);
-                          } else {
-                            toast({
-                              title: "Error",
-                              description: "No phone number available for this call",
-                              variant: "destructive"
-                            });
-                          }
-                        }}
-                        className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white px-6 h-10 rounded-md font-medium"
-                      >
-                        Request Live Location
-                      </Button>
+                      {currentCall?.phone && linkSent[currentCall.phone] ? (
+                        <div className="flex flex-col items-center gap-2">
+                          <div className="text-[#5B5FED] font-medium flex items-center gap-2">
+                            <CheckCircle className="h-4 w-4" />
+                            Link Sent
+                          </div>
+                          <div className="text-xs text-gray-500">Waiting for location data...</div>
+                        </div>
+                      ) : (
+                        <Button
+                          onClick={() => {
+                            if (currentCall?.phone) {
+                              handleSendTrackingLink(currentCall.phone);
+                            } else {
+                              toast({
+                                title: "Error",
+                                description: "No phone number available for this call",
+                                variant: "destructive"
+                              });
+                            }
+                          }}
+                          className="bg-[#5B5FED] hover:bg-[#4a4ec0] text-white px-6 h-10 rounded-md font-medium"
+                        >
+                          Request Live Location
+                        </Button>
+                      )}
                     </>
                   );
                 })()}
@@ -4179,7 +4396,7 @@ export const Dashboard = () => {
               <nav className="space-y-2">
                 <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800 bg-gray-800/50 text-white">
                   <Sparkles className="mr-2 h-4 w-4" />
-                  Ask Prepared
+                  Ask RudraOne
                 </Button>
                 <Button variant="ghost" className="w-full justify-start text-gray-400 hover:text-white hover:bg-gray-800">
                   <LayoutDashboard className="mr-2 h-4 w-4" />
@@ -4201,61 +4418,105 @@ export const Dashboard = () => {
             </div>
 
             {/* Main Content */}
-            <div className="flex-1 flex flex-col items-center justify-center p-8 relative">
-
-              {/* Logo Section */}
-              <div className="flex items-center gap-3 mb-8">
-                <img
-                  src="/image-removebg-preview (10).png"
-                  alt="Prepared Logo"
-                  className="h-40 w-auto"
-                />
+            <div className="flex-1 flex flex-col h-full relative bg-[#0f1117]">
+              {/* Chat History */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-32 scroll-smooth">
+                {analyticsMessages.length === 0 && (
+                  <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                    <img
+                      src="/image-removebg-preview (10).png"
+                      alt="RudraOne Logo"
+                      className="h-32 w-auto mb-6 opacity-80"
+                    />
+                    <p className="text-lg font-medium">Ask RudraOne Analytics</p>
+                    <p className="text-sm mt-2">Try asking: "Show me call volume by type"</p>
+                  </div>
+                )}
+                
+                {analyticsMessages.map((msg, idx) => (
+                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} w-full animate-in fade-in slide-in-from-bottom-4 duration-300`}>
+                    <div className={`${msg.type === 'html' ? 'w-full' : 'max-w-[70%]'} rounded-2xl ${msg.type === 'html' ? 'bg-transparent p-0' : 'p-5 shadow-lg bg-[#1e293b] border border-gray-700/50'} break-words ${msg.role === 'user' ? 'bg-blue-600 text-white border-none' : ''}`}>
+                      {msg.type === 'text' ? (
+                        <p className="whitespace-pre-wrap break-words leading-relaxed text-base text-gray-100">{msg.content}</p>
+                      ) : (
+                        <div className="w-full bg-transparent rounded-xl overflow-hidden">
+                           <iframe 
+                             srcDoc={msg.content} 
+                             className="w-full border-none"
+                             title="Analytics Artifact"
+                             style={{ minHeight: '100px' }}
+                             onLoad={(e) => {
+                               const iframe = e.target as HTMLIFrameElement;
+                               if (iframe.contentWindow) {
+                                 const updateHeight = () => {
+                                   if (iframe.contentWindow?.document?.body) {
+                                     const height = iframe.contentWindow.document.documentElement.scrollHeight;
+                                     iframe.style.height = `${height}px`;
+                                   }
+                                 };
+                                 
+                                 // Initial update
+                                 updateHeight();
+                                 
+                                 // Update after delays to catch chart rendering
+                                 setTimeout(updateHeight, 100);
+                                 setTimeout(updateHeight, 500);
+                                 setTimeout(updateHeight, 1000);
+                               }
+                             }}
+                           />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                
+                {isAnalyticsLoading && (
+                  <div className="flex justify-start w-full">
+                    <div className="bg-[#1e293b] border border-gray-700/50 rounded-2xl p-4 flex items-center gap-3 shadow-lg">
+                      <Loader2 className="h-5 w-5 animate-spin text-blue-400" />
+                      <span className="text-gray-300 text-sm font-medium">RudraOne is analyzing your data...</span>
+                    </div>
+                  </div>
+                )}
+                <div ref={analyticsEndRef} />
               </div>
 
-              {/* Search Bar Section */}
-              <div className="w-full max-w-2xl relative mb-8">
-                <div className="relative flex items-center bg-[#1a1d24] rounded-xl border border-gray-700 p-2 shadow-lg">
-                  <Button size="icon" variant="ghost" className="h-8 w-8 rounded-full bg-gray-700/50 text-gray-400 hover:text-white mr-2">
-                    <Plus className="h-4 w-4" />
+              {/* Floating Input Area */}
+              <div className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-[#0f1117] via-[#0f1117] to-transparent z-10">
+                <div className="relative flex items-end bg-[#1a1d24]/90 backdrop-blur-xl rounded-2xl border border-gray-700/50 p-2 shadow-2xl max-w-5xl mx-auto ring-1 ring-white/5 transition-all focus-within:ring-blue-500/50 focus-within:border-blue-500/50">
+                  <Button size="icon" variant="ghost" className="h-10 w-10 rounded-xl text-gray-400 hover:text-white hover:bg-gray-700/50 mb-0.5">
+                    <Plus className="h-5 w-5" />
                   </Button>
 
-                  <div className="flex items-center bg-gray-800/50 rounded-full px-3 py-1 mr-2">
-                    <Globe className="h-3 w-3 text-gray-400 mr-2" />
-                    <span className="text-xs text-gray-300">Search</span>
-                  </div>
-
-                  <input
-                    type="text"
-                    placeholder="Which incident types scored lower than 70% i"
-                    className="flex-1 bg-transparent border-none outline-none text-gray-300 placeholder-gray-500 text-sm h-10"
+                  <textarea
+                    value={analyticsInput}
+                    onChange={(e) => setAnalyticsInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAnalyticsSubmit();
+                      }
+                    }}
+                    placeholder="Ask a question about your data..."
+                    className="flex-1 bg-transparent border-none outline-none text-gray-200 placeholder-gray-500 text-base min-h-[44px] max-h-[160px] py-2.5 px-2 resize-none"
+                    disabled={isAnalyticsLoading}
+                    rows={1}
                   />
 
-                  <Button size="icon" className="h-8 w-8 rounded-full bg-[#e87c46] hover:bg-[#d66a35] text-white ml-2">
-                    <ArrowRight className="h-4 w-4" />
+                  <Button 
+                    size="icon" 
+                    className={`h-10 w-10 rounded-xl mb-0.5 transition-all ${analyticsInput.trim() ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20' : 'bg-gray-700 text-gray-500 cursor-not-allowed'}`}
+                    onClick={handleAnalyticsSubmit}
+                    disabled={isAnalyticsLoading || !analyticsInput.trim()}
+                  >
+                    <Send className="h-5 w-5" />
                   </Button>
                 </div>
+                <div className="text-center mt-2">
+                    <p className="text-xs text-gray-600">RudraOne Analytics can make mistakes. Please verify important information.</p>
+                </div>
               </div>
-
-              {/* Quick Action Cards */}
-              <div className="flex flex-wrap justify-center gap-4">
-                <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
-                  <Phone className="h-4 w-4 text-gray-400" />
-                  YTD Total Call Volume
-                </Button>
-                <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
-                  <Tag className="h-4 w-4 text-gray-400" />
-                  Top 10 Call Tags
-                </Button>
-                <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
-                  <LineChart className="h-4 w-4 text-gray-400" />
-                  Average QA Scores
-                </Button>
-                <Button variant="outline" className="bg-[#1a1d24] border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white h-auto py-2 px-4 rounded-lg gap-2">
-                  <Award className="h-4 w-4 text-gray-400" />
-                  Highest-Performing Staff
-                </Button>
-              </div>
-
             </div>
           </div>
         )}
@@ -4295,6 +4556,11 @@ export const Dashboard = () => {
                       onClick={() => {
                         setActiveTrainingSession(log.session_id);
                         if (log.conversation) setTrainingConversation(log.conversation);
+                        setHasGeneratedTrainingAIQuestions(false);
+                        // Initialize protocol session if missing
+                        if (protocolManagerRef.current && !protocolManagerRef.current.getSession(log.session_id)) {
+                          protocolManagerRef.current.initializeSession(log.session_id);
+                        }
                       }}
                       className={`p-3 border-b border-[#1a1a2a] cursor-pointer hover:bg-[#1a1a1a] transition-colors relative ${activeTrainingSession === log.session_id ? 'bg-gradient-to-r from-[#1a1a1a] to-[#1e1e2e]' : ''
                         }`}

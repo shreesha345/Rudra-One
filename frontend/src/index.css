@@ -72,10 +72,9 @@ All colors MUST be HSL. Luxury glassmorphic + neumorphic aesthetic.
   }
 
   body {
-    @apply bg-background text-foreground;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    @apply bg-background text-foreground font-sans;
     font-weight: 300;
-    letter-spacing: -0.01em;
+    letter-spacing: 0.01em;
     overflow-x: hidden;
   }
 
@@ -85,8 +84,9 @@ All colors MUST be HSL. Luxury glassmorphic + neumorphic aesthetic.
   h4,
   h5,
   h6 {
+    @apply font-heading;
     font-weight: 600;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
   }
 
   h1 {
@@ -224,7 +224,7 @@ All colors MUST be HSL. Luxury glassmorphic + neumorphic aesthetic.
 }
 /* Platform Navigation Mega Menu Enhancements */
 .platform-mega-menu {
-  font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+  @apply font-sans;
   background: #ffffff;
   background-image: 
     radial-gradient(circle at 0.5px 0.5px, rgba(0,0,0,0.008) 0.5px, transparent 0),
@@ -262,6 +262,7 @@ All colors MUST be HSL. Luxury glassmorphic + neumorphic aesthetic.
 }
 
 .platform-card h3 {
+  @apply font-heading;
   font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -271,6 +272,7 @@ All colors MUST be HSL. Luxury glassmorphic + neumorphic aesthetic.
 }
 
 .platform-card h4 {
+  @apply font-heading;
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -308,12 +310,12 @@ All colors MUST be HSL. Luxury glassmorphic + neumorphic aesthetic.
 
 /* Navigation font improvements */
 .nav-link {
-  font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+  @apply font-sans;
   letter-spacing: -0.01em;
 }
 
 .nav-logo {
-  font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+  @apply font-heading;
   letter-spacing: -0.02em;
 }
 
