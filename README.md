@@ -31,9 +31,10 @@ To solve these latency and reliability challenges, we chose **SigNoz** as our un
 
 ### Why SigNoz Was the Best Choice:
 1. **Open-Source & Easy to Deploy**: Unlike proprietary APM vendors (Datadog, New Relic) that require complex onboarding, closed agents, and licensing agreements, SigNoz is fully open-source. Using **SigNoz Foundry (`foundryctl`)**, we can stand up the entire SigNoz stack (ClickHouse database, OpenTelemetry Collector, Query-Service, and Frontend) locally in seconds using a single declarative configuration file (`casting.yaml`).
-2. **Deep APM & Custom AI Spans**: SigNoz native support for custom OpenTelemetry spans allows us to trace LLM completions, TTS audio generation, and browser user clicks in a single end-to-end distributed trace.
-3. **Log-to-Trace Correlation**: By embedding active trace IDs directly into our backend logger, SigNoz maps logs to their originating spans. When a call fails, we can click the error log in the SigNoz Logs Explorer and instantly jump to the exact span flamegraph to inspect the database query or API payload.
-4. **No Vendor Lock-In**: Built entirely on OpenTelemetry standards. If we scale up, we can repoint our telemetry exporter endpoint without changing a single line of application code.
+2. **AI-Native Observability**: Custom telemetry tags enable monitoring of modern AI-native applications. By tracing LLM prompts, completion usage, token metrics, and active model attributes, SigNoz exposes full transparency over the inner workings of our AI pipeline.
+3. **Deep APM & Custom AI Spans**: SigNoz native support for custom OpenTelemetry spans allows us to trace LLM completions, TTS audio generation, and browser user clicks in a single end-to-end distributed trace.
+4. **Log-to-Trace Correlation**: By embedding active trace IDs directly into our backend logger, SigNoz maps logs to their originating spans. When a call fails, we can click the error log in the SigNoz Logs Explorer and instantly jump to the exact span flamegraph to inspect the database query or API payload.
+5. **No Vendor Lock-In**: Built entirely on OpenTelemetry standards. If we scale up, we can repoint our telemetry exporter endpoint without changing a single line of application code.
 
 ---
 
