@@ -101,7 +101,7 @@ To make our deployment 100% reproducible for judges and developers, our backend 
 Upon running `docker compose up`, the backend lifecycle startup hooks will automatically connect to the SigNoz Postgres metastore and:
 1. Create a service account named `agent`.
 2. Bind the `agent` service account to the `signoz-admin` role.
-3. Seed the `4mrgKQQF31otQfn80EP49e3I2DCKRP/HgHy9/+T5aZs=` API key (used by the SigNoz MCP Server).
+3. Seed the local Service Account API key (used by the SigNoz MCP Server).
 4. Auto-import the **"RudraOne AI Agent & APM Monitor"** dashboard.
 
 Once the containers are healthy, you can access the pre-configured dashboard immediately:
