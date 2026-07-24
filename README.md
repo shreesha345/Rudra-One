@@ -105,7 +105,7 @@ Upon running `docker compose up`, the backend lifecycle startup hooks will autom
 4. Auto-import the **"RudraOne AI Agent & APM Monitor"** dashboard.
 
 Once the containers are healthy, you can access the pre-configured dashboard immediately:
-👉 **APM Dashboard URL**: [http://localhost:8080/dashboard/019f5a94-8617-7b7d-bc8c-e19f1ee892d0](http://localhost:8080/dashboard/019f5a94-8617-7b7d-bc8c-e19f1ee892d0)
+👉 **[APM Dashboard URL](http://localhost:8080/dashboard/019f5a94-8617-7b7d-bc8c-e19f1ee892d0)**
 
 ---
 
