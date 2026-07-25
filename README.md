@@ -75,7 +75,7 @@ cp .env.example .env
 ```
 Open `.env` and fill in your credentials:
 * **LLM Config**: Set `LLM_API_KEY`, `LLM_BASE_URL` (e.g. OpenAI or Vultr), and `LLM_MODEL`.
-* **Twilio (Optional)**: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` for voice call/SMS routing.
+* **Twilio**: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` for voice call/SMS routing.
 * **Speech APIs**: `DEEPGRAM_API_KEY` (STT) and `ELEVENLABS_API_KEY` (TTS).
 * **Mapbox**: `VITE_MAPBOX_TOKEN` to render map graphics in the React frontend.
 
