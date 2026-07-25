@@ -14,8 +14,10 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import queue
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -164,18 +166,43 @@ def start_tunnel(port: int) -> Optional[str]:
 
 
 def _wait_for_url(timeout: int = 60) -> Optional[str]:
-    """Read cloudflared stdout until we find the trycloudflare URL."""
+    """
+    Read cloudflared stdout until we find the trycloudflare URL.
+
+    stdout is read on a background thread because Popen.stdout.readline()
+    blocks with no timeout of its own — if cloudflared goes quiet without
+    exiting (e.g. it can't reach Cloudflare's edge), a direct readline()
+    loop would hang past `timeout` and freeze the FastAPI startup that
+    calls this. The reader thread lets us bound the wait with queue.get().
+    """
     if _process is None or _process.stdout is None:
         return None
+
+    lines: "queue.Queue[Optional[str]]" = queue.Queue()
+
+    def _reader() -> None:
+        try:
+            for line in iter(_process.stdout.readline, ""):
+                lines.put(line)
+        finally:
+            lines.put(None)  # sentinel: EOF / stream closed
+
+    thread = threading.Thread(target=_reader, daemon=True)
+    thread.start()
 
     deadline = time.time() + timeout
     url_re = re.compile(r"https://([a-z0-9-]+\.trycloudflare\.com)")
     while time.time() < deadline:
-        line = _process.stdout.readline()
-        if line == "":
+        remaining = deadline - time.time()
+        try:
+            line = lines.get(timeout=max(remaining, 0))
+        except queue.Empty:
+            break
+
+        if line is None:
             logger.warning("cloudflared stdout reached EOF (process may have exited).")
             break
-        
+
         logger.info("cloudflared: %s", line.strip())
         m = url_re.search(line)
         if m:
@@ -186,6 +213,8 @@ def _wait_for_url(timeout: int = 60) -> Optional[str]:
         # Also check for configured tunnel hostname
         if "Registered tunnel connection" in line:
             break
+    else:
+        logger.warning("Timed out after %ss waiting for cloudflared URL.", timeout)
 
     if _process.poll() is not None:
         logger.error("cloudflared process terminated with exit code %s", _process.returncode)

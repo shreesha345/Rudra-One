@@ -80,6 +80,10 @@ SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 # use a quick tunnel (ephemeral URL, no account required).
 TUNNEL_TOKEN = os.getenv("TUNNEL_TOKEN", "")
 TUNNEL_URL = os.getenv("TUNNEL_URL", "")  # Pre-known tunnel hostname (optional)
+# Set when a separate process/container (e.g. the docker-compose `cloudflared`
+# sidecar) already runs the tunnel, so the backend must not spawn its own —
+# doing both races two cloudflared processes for the same port/token.
+TUNNEL_MANAGED_EXTERNALLY = os.getenv("TUNNEL_MANAGED_EXTERNALLY", "false").lower() == "true"
 
 # ── Audio ──────────────────────────────────────────────────────────────────────
 AUDIO_RATE = _get_int("AUDIO_RATE", 16000)

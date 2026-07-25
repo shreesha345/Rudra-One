@@ -1,32 +1,36 @@
+# syntax=docker/dockerfile:1
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    UV_LINK_MODE=copy
 
 # System deps:
 #   gcc + python3-dev  → build C extensions (psycopg2, etc.)
 #   libpq-dev          → PostgreSQL client headers (psycopg2)
 #   ffmpeg             → audio format conversion (pydub)
-#   curl               → download cloudflared
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# cloudflared is NOT installed here: docker-compose runs it as its own
+# `cloudflared` sidecar service, and the backend's own tunnel fallback
+# (backend/services/tunnel.py) is disabled via TUNNEL_MANAGED_EXTERNALLY
+# when running under compose — see docker-compose.yml.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     python3-dev \
     libpq-dev \
     ffmpeg \
-    curl \
-    && curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared \
-    && chmod +x /usr/local/bin/cloudflared \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Install uv for fast dependency resolution
-RUN pip install uv
+RUN --mount=type=cache,target=/root/.cache/pip pip install uv
 
 # Copy dependency manifest first for better layer caching
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
 # Copy application code
 COPY backend/ ./backend/

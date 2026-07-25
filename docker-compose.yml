@@ -38,6 +38,9 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-ingester:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
       SIGNOZ_ACCESS_TOKEN: ${SIGNOZ_ACCESS_TOKEN:-}
+      # The `cloudflared` sidecar below already tunnels backend:8000, so the
+      # backend must not also spawn its own tunnel process on startup.
+      TUNNEL_MANAGED_EXTERNALLY: "true"
     ports:
       - "8000:8000"
     networks:
@@ -46,6 +49,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     volumes:
       - ./static:/app/static
       - ./911_calls.json:/app/911_calls.json:ro
@@ -82,7 +91,8 @@ services:
     ports:
       - "8082:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   # ────────────────────────────────────────────────────────────────────────────
   # Cloudflare Tunnel (replaces ngrok — exposes backend to the internet)
@@ -93,7 +103,8 @@ services:
     restart: always
     command: tunnel --url http://backend:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
 

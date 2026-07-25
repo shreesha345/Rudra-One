@@ -4,6 +4,7 @@ required Service Account, API Key, and APM Dashboard on backend startup.
 """
 import json
 import logging
+import os
 import asyncpg
 
 logger = logging.getLogger(__name__)
@@ -232,7 +233,7 @@ async def seed_signoz_metadata():
 
         # 5. Seed API Key
         key_id = "019f5a92-9370-7af9-9b79-2b1fbff81c33"
-        api_key = "4mrgKQQF31otQfn80EP49e3I2DCKRP/HgHy9/+T5aZs="
+        api_key = os.environ.get("SIGNOZ_SEEDER_API_KEY", "")
         key_row = await conn.fetchrow("SELECT id FROM factor_api_key WHERE id = $1;", key_id)
         if not key_row:
             await conn.execute(

@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI):
 
     # Cloudflare Tunnel (replaces ngrok)
     domain = config.TUNNEL_URL
-    if not domain and config.ENVIRONMENT == "development":
+    if not domain and config.ENVIRONMENT == "development" and not config.TUNNEL_MANAGED_EXTERNALLY:
         domain = start_tunnel(config.PORT)
 
     is_public = bool(domain) and not domain.startswith("localhost")

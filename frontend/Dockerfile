@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # ── Stage 1: Build the React frontend ─────────────────────────────────────────
 FROM node:20-alpine AS builder
 
@@ -13,7 +14,8 @@ RUN if [ ! -f .env ]; then cp .env.example .env; fi
 # Copy package files first for layer caching
 COPY frontend/package.json frontend/package-lock.json ./frontend/
 WORKDIR /app/frontend
-RUN npm install --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps
 
 # Copy frontend source code
 WORKDIR /app
