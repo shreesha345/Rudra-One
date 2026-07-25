@@ -60,6 +60,78 @@ Any unhandled exceptions, database transaction conflicts, or API quotas (e.g. El
 
 ---
 
+## 🏗️ Technical Deep Dive: Architecture Flow
+
+Below is the end-to-end execution sequence of the emergency voice dispatch pipeline. It highlights how user and operator interactions propagate through the network and database layers, and how **SigNoz** asynchronously collects distributed traces, custom attributes, and correlated logs at every step:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Caller
+    participant Twilio
+    participant Frontend as Frontend Dispatcher
+    participant Backend as FastAPI Backend
+    participant DB as PostgreSQL Database
+    participant Deepgram as Deepgram (STT)
+    participant TTS as ElevenLabs/Sarvam (TTS)
+    participant Services as Emergency Services
+    participant SigNoz as SigNoz Observability
+
+    Caller->>Twilio: Dials emergency number
+    Twilio->>Backend: POST /twiml (Incoming Call Webhook)
+    Note over Backend: Starts OTel Span: "/twiml"
+    Backend-->>SigNoz: Async export HTTP ingress traces
+    Backend->>Twilio: TwiML Response (<Connect><Stream url="..." />)
+    Twilio->>Backend: Opens WebSocket Stream (Sends raw µ-law audio)
+    Note over Backend: Starts OTel Span: WebSocket connection
+
+    loop Real-time Audio Processing
+        Backend->>Deepgram: Stream PCM16 audio
+        Deepgram->>Backend: Transcript (JSON)
+        Backend->>Frontend: Broadcast transcript over WebSocket
+        Backend->>DB: Asynchronously save partial transcripts
+        Note over DB: Tracks SQL execution duration
+        DB-->>SigNoz: Export DB operation spans
+    end
+
+    Backend->>Backend: Detect language mismatch
+
+    alt Translation Required
+        Backend->>TTS: Request translated dispatcher audio
+        Note over Backend: Traces translation API latency
+        TTS->>Backend: Returns translated audio
+        Backend->>Twilio: Play translated audio to Caller
+        Twilio->>Caller: Audio played
+    else No Translation
+        Backend->>Twilio: Play dispatcher audio to Caller
+        Twilio->>Caller: Audio played
+    end
+
+    Note over Backend,SigNoz: During the call, custom spans are exported with model and token usage attributes
+    Backend-->>SigNoz: Export LLM usage metrics (prompt, completion, total tokens)
+
+    Frontend->>Backend: Clicks "Send Location SMS to Caller"
+    Note over Frontend: Traces browser click event
+    Frontend-->>SigNoz: Export frontend trace context
+    Backend->>Twilio: Send SMS with live location link
+    Twilio->>Caller: SMS with link
+    Caller->>Backend: Opens link & shares live location (POST /location)
+    Backend->>Frontend: Updates dashboard with live location
+
+    Frontend->>Backend: Clicks "Send Emergency Alert"
+    Backend->>Twilio: POST /sms/emergency
+    Twilio->>Services: SMS with incident details & caller location
+
+    Frontend->>Backend: Clicks "Emergency Call"
+    Backend->>Twilio: POST /call/emergency (Outbound call)
+    Twilio->>Services: Outbound automated emergency call
+
+    Note over Backend,SigNoz: Unhandled exceptions are captured as span events
+    Backend-->>SigNoz: Export exception details & trace stack logs
+```
+
+---
+
 ## 🚀 Getting Started & Setup
 
 ### Prerequisites
