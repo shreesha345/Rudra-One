@@ -1,6 +1,6 @@
 # RudraOne — AI Voice Emergency Dispatcher with Deep SigNoz Observability
 
-RudraOne is a real-time, low-latency voice emergency dispatcher AI agent. It is designed to handle critical 911 calls, parse incident reports, geolocate emergencies, and dispatch nearby agencies. To guarantee the millisecond-level reliability required in life-or-death scenarios, the entire application is deeply instrumented with **OpenTelemetry (OTel)**, exporting metrics, distributed traces, and correlated logs to **SigNoz**.
+RudraOne is a real-time, low-latency voice emergency dispatcher AI agent. It is designed to handle critical 112 calls, parse incident reports, geolocate emergencies, and dispatch nearby agencies. To guarantee the millisecond-level reliability required in life-or-death scenarios, the entire application is deeply instrumented with **OpenTelemetry (OTel)**, exporting metrics, distributed traces, and correlated logs to **SigNoz**.
 
 ## 🚨 Problem Statement
 
